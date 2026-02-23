@@ -23,8 +23,8 @@ def _build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 Examples:
-  proton-to-icloud upload -s ./eml -m "Proton-Import" -e you@icloud.com
-  proton-to-icloud upload -s ./eml -m "Proton-Import/Sent" -e you@icloud.com --dry-run
+  proton-to-icloud upload -s "you@pm.me/mail_20260223_210229" -e you@icloud.com
+  proton-to-icloud upload -s "you@pm.me/mail_20260223_210229" -e you@icloud.com --dry-run
         """,
     )
     upload_p.add_argument(
@@ -77,8 +77,8 @@ Examples:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 Examples:
-  proton-to-icloud batch -s ./eml -n 1000
-  proton-to-icloud batch -s ./eml -n 500 -o ./batches --move
+  proton-to-icloud batch -s "you@pm.me/mail_20260223_210229" -n 1000
+  proton-to-icloud batch -s "you@pm.me/mail_20260223_210229" -n 500 -o ./batches --move
         """,
     )
     batch_p.add_argument(

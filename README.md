@@ -54,8 +54,8 @@ uv run proton-to-icloud --help
 
 ## Prerequisites
 
-1. **Export your Proton Mail** — use the Proton Mail export tool to download
-   your mailbox as `.eml` files.
+1. **Export your Proton Mail** — use the [Proton Mail Export Tool](https://proton.me/support/proton-mail-export-tool)
+   to download your mailbox as `.eml` files.
 
 2. **Generate an App-Specific Password** — go to
    [appleid.apple.com](https://appleid.apple.com) → Sign-In and Security →
@@ -64,11 +64,25 @@ uv run proton-to-icloud --help
 
 ## Usage
 
+The Proton Mail Export Tool creates a folder structure like:
+
+```
+your.address@pm.me/
+└── mail_20260223_210229/
+    ├── messageId1.eml
+    ├── messageId1.metadata.json
+    ├── messageId2.eml
+    ├── messageId2.metadata.json
+    └── ...
+```
+
+Point `--source` at the `mail_*` directory (the one containing the `.eml` files).
+
 ### Upload `.eml` files to iCloud
 
 ```bash
 proton-to-icloud upload \
-  --source ./exported-eml \
+  --source "your.address@pm.me/mail_20260223_210229" \
   --mailbox "Proton-Import" \
   --email you@icloud.com
 ```
@@ -93,7 +107,7 @@ If you prefer to drag-and-drop smaller batches into Apple Mail instead:
 
 ```bash
 proton-to-icloud batch \
-  --source ./exported-eml \
+  --source "your.address@pm.me/mail_20260223_210229" \
   --batch-size 1000
 ```
 
@@ -118,9 +132,9 @@ You can also manually resume with `--resume-from N` to skip the first N files.
 ## Performance
 
 In testing, throughput is approximately **1–2 seconds per message** depending on
-file size and network conditions. For 38,000 messages, expect roughly 10–20
+file size and network conditions. For 50,000 messages, expect roughly 14–28
 hours of upload time. An ethernet connection and a machine that can run
-uninterrupted (e.g., a Mac Mini) is recommended for large imports.
+uninterrupted is recommended for large imports.
 
 ## Development
 
