@@ -40,8 +40,9 @@ Examples:
         "-m",
         "--mailbox",
         default="Proton-Import",
-        help='Target IMAP folder. Default: "Proton-Import". '
-        'Use "/" for hierarchy, e.g. "Proton-Import/Sent".',
+        help='Base IMAP folder for subfolder routing and fallback. Default: "Proton-Import". '
+        "Emails are routed into subfolders (e.g. Proton-Import/Inbox) based on "
+        "Proton metadata when available.",
     )
     upload_p.add_argument(
         "-e",
@@ -66,6 +67,12 @@ Examples:
         default=0,
         metavar="N",
         help="Skip the first N files (for manual resume). Default: 0.",
+    )
+    upload_p.add_argument(
+        "--direct",
+        action="store_true",
+        help="Route directly into native iCloud folders (INBOX, Sent Messages, etc.) "
+        "based on Proton metadata instead of subfolders under --mailbox.",
     )
     upload_p.add_argument(
         "--no-create-mailbox",
