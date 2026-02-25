@@ -144,6 +144,43 @@ def clear_state(source_dir: str) -> None:
         pass
 
 
+# ── EML sanitisation ─────────────────────────────────────────────────────
+
+
+def sanitize_eml_headers(raw: bytes) -> bytes:
+    """Remove headers with empty values that iCloud IMAP rejects.
+
+    Some exports contain headers like ``X-Mozilla-Keys: \\r\\n`` (name, colon,
+    whitespace-only value).  iCloud's IMAP server returns ``BAD Parse Error``
+    for these.  This strips them from the header section only, leaving the
+    message body untouched.
+    """
+    # Locate the header/body boundary (first blank line)
+    for sep in (b"\r\n\r\n", b"\n\n"):
+        pos = raw.find(sep)
+        if pos >= 0:
+            break
+    else:
+        return raw  # no boundary found — leave unchanged
+
+    header_section = raw[:pos]
+    rest = raw[pos:]  # separator + body, returned verbatim
+
+    line_end = b"\r\n" if b"\r\n" in header_section else b"\n"
+    lines = header_section.split(line_end)
+
+    cleaned: list[bytes] = []
+    for line in lines:
+        # A header line starts with a non-whitespace token followed by ':'
+        if b":" in line and not line.startswith((b" ", b"\t")):
+            _, _, value = line.partition(b":")
+            if value.strip() == b"":
+                continue  # drop empty-value header
+        cleaned.append(line)
+
+    return line_end.join(cleaned) + rest
+
+
 # ── Core upload loop ─────────────────────────────────────────────────────────
 
 
@@ -154,11 +191,17 @@ def upload_eml_files(
     source_dir: str,
     resume_from: int = 0,
     routing: dict[str, list[str]] | None = None,
+    routing_mode: str = "single",
+    reconnect=None,
 ) -> tuple[int, int, int, list[str]]:
     """Upload .eml file paths to the IMAP mailbox via APPEND.
 
     When *routing* is provided, each file is uploaded to its resolved target
     folder instead of the single *mailbox_name*.
+
+    *reconnect*, when provided, is a zero-argument callable that returns a
+    fresh ``IMAP4_SSL`` connection.  It is invoked automatically when the
+    connection drops mid-upload.
 
     Returns (uploaded, skipped, failed, failed_files).
     """
@@ -198,6 +241,9 @@ def upload_eml_files(
             print_progress(processed, remaining, uploaded, failed, start_time)
             continue
 
+        # Sanitise headers that iCloud's strict parser rejects
+        raw_message = sanitize_eml_headers(raw_message)
+
         # Extract original Date for IMAP internal date
         internal_date = parse_date_from_eml(raw_message)
 
@@ -214,18 +260,31 @@ def upload_eml_files(
                 failed += 1
                 failed_files.append(filepath)
 
-        except (imaplib.IMAP4.error, imaplib.IMAP4.abort) as e:
+        except (imaplib.IMAP4.error, imaplib.IMAP4.abort, OSError) as e:
             sys.stdout.write("\n")
             print(f"  WARNING: IMAP error for {os.path.basename(filepath)}: {e}")
             failed += 1
             failed_files.append(filepath)
+
+            # Check whether the connection is still alive; reconnect if needed
+            if reconnect:
+                try:
+                    conn.noop()
+                except Exception:
+                    try:
+                        print("  Connection lost. Reconnecting...")
+                        conn = reconnect()
+                        print("  Reconnected successfully.")
+                    except Exception:
+                        print("  ERROR: Could not reconnect.")
+                        reconnect = None  # stop retrying on every subsequent file
 
         processed += 1
         print_progress(processed, remaining, uploaded, failed, start_time)
 
         # Save state periodically for resume
         if processed % BATCH_LOG_INTERVAL == 0:
-            save_state(source_dir, i, uploaded, failed, failed_files, mailbox_name)
+            save_state(source_dir, i, uploaded, failed, failed_files, mailbox_name, routing_mode)
             time.sleep(SLEEP_PER_BATCH)
         else:
             time.sleep(SLEEP_PER_MESSAGE)
@@ -234,7 +293,7 @@ def upload_eml_files(
     print_progress(processed, remaining, uploaded, failed, start_time)
     sys.stdout.write("\n")
 
-    save_state(source_dir, total - 1, uploaded, failed, failed_files, mailbox_name)
+    save_state(source_dir, total - 1, uploaded, failed, failed_files, mailbox_name, routing_mode)
 
     return uploaded, skipped, failed, failed_files
 
@@ -354,9 +413,31 @@ def _print_summary(
 # ── CLI orchestrator ─────────────────────────────────────────────────────────
 
 
+def _list_existing_mailboxes(conn: imaplib.IMAP4_SSL) -> set[str]:
+    """Return the set of mailbox names already present on the server."""
+    status, data = conn.list()
+    existing: set[str] = set()
+    if status != "OK" or data is None:
+        return existing
+    for item in data:
+        if item is None:
+            continue
+        # Each item is like: b'(\\HasNoChildren) "/" "INBOX"'
+        line = item.decode("utf-8", errors="replace") if isinstance(item, bytes) else str(item)
+        # Mailbox name is after the last space-separated quoted or unquoted token
+        parts = line.rsplit('" ', 1)
+        if len(parts) == 2:
+            name = parts[1].strip().strip('"')
+            existing.add(name)
+    return existing
+
+
 def _ensure_all_mailboxes(conn: imaplib.IMAP4_SSL, routing: dict[str, list[str]]) -> None:
     """Create every target folder from the routing plan, exiting on failure."""
+    existing = _list_existing_mailboxes(conn)
     for folder in sorted(routing):
+        if folder in existing:
+            continue
         if not ensure_mailbox_exists(conn, folder):
             conn.logout()
             sys.exit(1)
@@ -369,6 +450,8 @@ def _run_upload_loop(
     source: str,
     resume_from: int,
     routing: dict[str, list[str]],
+    routing_mode: str = "single",
+    reconnect=None,
 ) -> tuple[int, int, int, list[str], float]:
     """Execute the upload loop, handling Ctrl-C gracefully.
 
@@ -387,6 +470,8 @@ def _run_upload_loop(
             source,
             resume_from=resume_from,
             routing=routing,
+            routing_mode=routing_mode,
+            reconnect=reconnect,
         )
     except KeyboardInterrupt:
         elapsed = time.time() - start_time
@@ -416,7 +501,7 @@ def run_upload(args: Namespace) -> None:
     """Entry point called from cli.py for the ``upload`` subcommand."""
 
     source = args.source
-    direct = getattr(args, "direct", False)
+    direct = args.direct
 
     if not os.path.isdir(source):
         print(f"Error: Source directory does not exist: {source}", file=sys.stderr)
@@ -438,6 +523,7 @@ def run_upload(args: Namespace) -> None:
     print(f"Found {total:,} .eml files.")
 
     # ── Build routing plan ────────────────────────────────────────────
+    print(f"Reading metadata for {total:,} emails...")
     routing = build_routing_plan(eml_files, source, direct=direct, base_mailbox=args.mailbox)
     print_routing_summary(routing)
 
@@ -469,13 +555,19 @@ def run_upload(args: Namespace) -> None:
 
     conn = _connect_imap(args.email, password)
 
+    def reconnect():
+        """Return a fresh authenticated IMAP connection."""
+        c = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
+        c.login(args.email, password)
+        return c
+
     # ── Ensure target mailboxes exist ─────────────────────────────────
     if not args.no_create_mailbox:
         _ensure_all_mailboxes(conn, routing)
 
     # ── Upload ────────────────────────────────────────────────────────
     uploaded, skipped, failed, failed_files, elapsed = _run_upload_loop(
-        conn, eml_files, args.mailbox, source, resume_from, routing
+        conn, eml_files, args.mailbox, source, resume_from, routing, routing_mode, reconnect
     )
 
     try:

@@ -49,6 +49,8 @@ def load_labels(source_dir: str) -> dict[str, str] | None:
                 payload = data.get("Payload", [])
                 return {item["ID"]: item["Name"] for item in payload}
             except (OSError, json.JSONDecodeError, KeyError, TypeError):
+                # Intentional: a corrupted file should not silently fall through
+                # to the next candidate path — surface the problem immediately.
                 return None
     return None
 
@@ -153,9 +155,6 @@ def build_routing_plan(
 
     if labels_map is None:
         return {base_mailbox: list(eml_files)}
-
-    total = len(eml_files)
-    print(f"Reading metadata for {total:,} emails...")
 
     routing: dict[str, list[str]] = {}
     for path in eml_files:
