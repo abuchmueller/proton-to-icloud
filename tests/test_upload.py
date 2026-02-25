@@ -2,7 +2,13 @@
 
 import os
 
-from proton_to_icloud.upload import collect_eml_files, parse_date_from_eml
+from proton_to_icloud.upload import (
+    collect_eml_files,
+    load_state,
+    parse_date_from_eml,
+    sanitize_eml_headers,
+    save_state,
+)
 
 
 class TestCollectEmlFiles:
@@ -75,3 +81,74 @@ class TestParseDateFromEml:
     def test_empty_bytes(self):
         result = parse_date_from_eml(b"")
         assert result is None
+
+
+class TestSaveStateRoutingMode:
+    def test_default_routing_mode_is_single(self, tmp_path):
+        save_state(str(tmp_path), 0, 1, 0, [], "INBOX")
+        state = load_state(str(tmp_path))
+        assert state is not None
+        assert state["routing_mode"] == "single"
+
+    def test_direct_routing_mode(self, tmp_path):
+        save_state(str(tmp_path), 0, 1, 0, [], "INBOX", routing_mode="direct")
+        state = load_state(str(tmp_path))
+        assert state is not None
+        assert state["routing_mode"] == "direct"
+
+    def test_routed_routing_mode(self, tmp_path):
+        save_state(str(tmp_path), 0, 1, 0, [], "INBOX", routing_mode="routed")
+        state = load_state(str(tmp_path))
+        assert state is not None
+        assert state["routing_mode"] == "routed"
+
+
+class TestSanitizeEmlHeaders:
+    def test_strips_empty_value_header_lf(self):
+        raw = b"From: a@b.com\nX-Mozilla-Keys: \nDate: Mon, 1 Jan 2024\n\nBody"
+        result = sanitize_eml_headers(raw)
+        assert b"X-Mozilla-Keys" not in result
+        assert b"From: a@b.com" in result
+        assert b"Date: Mon, 1 Jan 2024" in result
+        assert result.endswith(b"\n\nBody")
+
+    def test_strips_empty_value_header_crlf(self):
+        raw = b"From: a@b.com\r\nX-Mozilla-Keys: \r\nDate: Mon, 1 Jan 2024\r\n\r\nBody"
+        result = sanitize_eml_headers(raw)
+        assert b"X-Mozilla-Keys" not in result
+        assert b"From: a@b.com" in result
+        assert result.endswith(b"\r\n\r\nBody")
+
+    def test_strips_header_with_no_space_after_colon(self):
+        raw = b"From: a@b.com\nX-Empty:\nSubject: Hi\n\nBody"
+        result = sanitize_eml_headers(raw)
+        assert b"X-Empty" not in result
+        assert b"Subject: Hi" in result
+
+    def test_preserves_headers_with_values(self):
+        raw = b"From: a@b.com\nX-Custom: value\nSubject: Hi\n\nBody"
+        result = sanitize_eml_headers(raw)
+        assert result == raw
+
+    def test_preserves_body_unchanged(self):
+        body = b"Body line with X-Header: \nand more"
+        raw = b"From: a@b.com\nX-Empty: \n\n" + body
+        result = sanitize_eml_headers(raw)
+        assert result.endswith(b"\n\n" + body)
+
+    def test_preserves_folded_continuation_lines(self):
+        raw = b"Subject: long\n value here\nFrom: a@b.com\n\nBody"
+        result = sanitize_eml_headers(raw)
+        assert b" value here" in result
+
+    def test_no_body_separator_returns_unchanged(self):
+        raw = b"From: a@b.com\nX-Empty: "
+        result = sanitize_eml_headers(raw)
+        assert result == raw
+
+    def test_multiple_empty_headers(self):
+        raw = b"From: a@b.com\nX-A: \nX-B: \nSubject: Hi\n\nBody"
+        result = sanitize_eml_headers(raw)
+        assert b"X-A" not in result
+        assert b"X-B" not in result
+        assert b"Subject: Hi" in result

@@ -20,6 +20,7 @@ Zero-dependency Python CLI tool that uploads Proton Mail .eml exports to iCloud 
 **Key structure:**
 - `src/proton_to_icloud/cli.py` — argparse CLI with `upload` and `batch` subcommands
 - `src/proton_to_icloud/upload.py` — IMAP APPEND upload logic with resume/state
+- `src/proton_to_icloud/metadata.py` — Proton metadata parsing and folder routing logic
 - `src/proton_to_icloud/batch.py` — Split .eml files into numbered batch folders
 - `src/proton_to_icloud/progress.py` — Terminal progress bar utilities
 

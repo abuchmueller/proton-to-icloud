@@ -27,6 +27,8 @@ with `pipx` or `uv tool install`.
 - **Batch splitting** — optionally split thousands of `.eml` files into
   numbered batch folders
 - **Zero dependencies** — stdlib only, no conflicts when installed globally
+- **Folder routing** — automatically routes emails to the correct IMAP
+  folders (Inbox, Sent, Archive, etc.) based on Proton metadata
 - **Dry-run mode** — scan and count files without connecting or uploading
 
 ## Installation
@@ -96,12 +98,50 @@ You'll be prompted securely for the app-specific password.
 | Flag                  | Description                                    | Default          |
 | --------------------- | ---------------------------------------------- | ---------------- |
 | `-s`, `--source`      | Directory containing `.eml` files (recursive). Interactive picker when omitted. | *(picker)* |
-| `-m`, `--mailbox`     | Target IMAP folder                             | `Proton-Import`  |
+| `-m`, `--mailbox`     | Base IMAP folder for subfolder routing and fallback | `Proton-Import`  |
 | `-e`, `--email`       | Your iCloud / Apple ID email                   | *(required)*     |
 | `-p`, `--password`    | App-specific password (prompted if omitted)    | *(prompted)*     |
+| `--direct`            | Route into native iCloud folders instead of subfolders |            |
 | `--dry-run`           | Scan only, don't connect or upload             |                  |
 | `--resume-from N`     | Skip the first N files                         | `0`              |
 | `--no-create-mailbox` | Don't auto-create the target folder            |                  |
+
+### Folder Routing
+
+When Proton metadata (`labels.json` and `.metadata.json` files) is present,
+emails are automatically routed to the correct folders based on their Proton
+labels.
+
+**Default mode** — emails go into subfolders of `--mailbox`:
+
+```bash
+proton-to-icloud upload \
+  --source "your.address@pm.me/mail_20260223_210229" \
+  --email you@icloud.com
+# → Proton-Import/Inbox, Proton-Import/Sent, Proton-Import/Archive, etc.
+```
+
+**Direct mode** (`--direct`) — emails go into native iCloud folders:
+
+```bash
+proton-to-icloud upload \
+  --source "your.address@pm.me/mail_20260223_210229" \
+  --email you@icloud.com \
+  --direct
+# → INBOX, Sent Messages, Archive, Junk, Deleted Messages, etc.
+```
+
+| Proton Label | Default mode (`--mailbox X`) | `--direct` mode |
+|---|---|---|
+| Inbox | `X/Inbox` | `INBOX` |
+| Sent | `X/Sent` | `Sent Messages` |
+| Drafts | `X/Drafts` | `Drafts` |
+| Spam | `X/Spam` | `Junk` |
+| Trash | `X/Trash` | `Deleted Messages` |
+| Archive | `X/Archive` | `Archive` |
+| Unknown / no metadata | `X` (fallback) | `X` (fallback) |
+
+If no `labels.json` is found, all emails go to `--mailbox` (backward-compatible).
 
 ### Split `.eml` files into batch folders
 
