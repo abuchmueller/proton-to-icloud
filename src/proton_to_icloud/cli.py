@@ -1,5 +1,7 @@
 """CLI entry point: argparse with ``upload`` and ``batch`` subcommands."""
 
+from __future__ import annotations
+
 import argparse
 import sys
 
@@ -30,8 +32,9 @@ Examples:
     upload_p.add_argument(
         "-s",
         "--source",
-        required=True,
-        help="Directory containing .eml files (searched recursively).",
+        default=None,
+        help="Directory containing .eml files (searched recursively). "
+        "Launches an interactive picker when omitted.",
     )
     upload_p.add_argument(
         "-m",
@@ -84,8 +87,9 @@ Examples:
     batch_p.add_argument(
         "-s",
         "--source",
-        required=True,
-        help="Directory containing .eml files (searched recursively).",
+        default=None,
+        help="Directory containing .eml files (searched recursively). "
+        "Launches an interactive picker when omitted.",
     )
     batch_p.add_argument(
         "-n",
@@ -109,6 +113,24 @@ Examples:
     return parser
 
 
+def _resolve_source(args: argparse.Namespace) -> str:
+    """Return the source directory, launching the interactive picker if needed."""
+    if args.source is not None:
+        return args.source
+
+    if not sys.stdin.isatty():
+        print("Error: --source is required in non-interactive mode.", file=sys.stderr)
+        sys.exit(1)
+
+    from proton_to_icloud.picker import pick_directory
+
+    result = pick_directory()
+    if result is None:
+        print("Cancelled.")
+        sys.exit(130)
+    return result
+
+
 def main() -> None:
     """Parse arguments and dispatch to the appropriate subcommand."""
     parser = _build_parser()
@@ -117,6 +139,9 @@ def main() -> None:
     if args.command is None:
         parser.print_help()
         sys.exit(1)
+
+    if hasattr(args, "source"):
+        args.source = _resolve_source(args)
 
     # Lazy imports keep startup fast for --version / --help
     if args.command == "upload":

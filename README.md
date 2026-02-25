@@ -77,6 +77,8 @@ your.address@pm.me/
 ```
 
 Point `--source` at the `mail_*` directory (the one containing the `.eml` files).
+If you omit `--source`, an **interactive folder picker** launches — navigate with
+arrow keys, Enter to open a directory, Space to select, Esc to cancel.
 
 ### Upload `.eml` files to iCloud
 
@@ -93,7 +95,7 @@ You'll be prompted securely for the app-specific password.
 
 | Flag                  | Description                                    | Default          |
 | --------------------- | ---------------------------------------------- | ---------------- |
-| `-s`, `--source`      | Directory containing `.eml` files (recursive)  | *(required)*     |
+| `-s`, `--source`      | Directory containing `.eml` files (recursive). Interactive picker when omitted. | *(picker)* |
 | `-m`, `--mailbox`     | Target IMAP folder                             | `Proton-Import`  |
 | `-e`, `--email`       | Your iCloud / Apple ID email                   | *(required)*     |
 | `-p`, `--password`    | App-specific password (prompted if omitted)    | *(prompted)*     |
@@ -115,7 +117,7 @@ proton-to-icloud batch \
 
 | Flag              | Description                              | Default            |
 | ----------------- | ---------------------------------------- | ------------------ |
-| `-s`, `--source`  | Directory containing `.eml` files        | *(required)*       |
+| `-s`, `--source`  | Directory containing `.eml` files. Interactive picker when omitted. | *(picker)* |
 | `-n`, `--batch-size` | Files per batch folder                | `1000`             |
 | `-o`, `--output`  | Output directory for batch folders       | `<source>/batches` |
 | `--move`          | Move files instead of copying            | copy               |
