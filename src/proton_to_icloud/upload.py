@@ -144,6 +144,65 @@ def clear_state(source_dir: str) -> None:
         pass
 
 
+def _prepare_retry_files(
+    source_dir: str, *, direct: bool, base_mailbox: str
+) -> tuple[list[str], dict[str, list[str]], str]:
+    """Load failed files from the state file and prepare them for re-upload.
+
+    Returns ``(eml_files, routing, routing_mode)``.
+    Exits the process when state is missing, empty, or the routing mode mismatches.
+    """
+    state = load_state(source_dir)
+    if state is None:
+        print(
+            f"Error: No state file found in {source_dir}. "
+            "Run a normal upload first before using --retry-failed.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    failed_files: list[str] = state.get("failed_files", [])
+    if not failed_files:
+        print("No failed files recorded in the previous run — nothing to retry.")
+        sys.exit(0)
+
+    # Determine expected routing mode from current flags
+    current_mode = "direct" if direct else "single"
+    saved_mode = state.get("routing_mode", "single")
+    # Normalise: both "routed" and "single" are non-direct modes
+    saved_is_direct = saved_mode == "direct"
+    current_is_direct = current_mode == "direct"
+    if saved_is_direct != current_is_direct:
+        print(
+            f"Error: Previous run used routing_mode='{saved_mode}', "
+            f"but current flags resolve to '{'direct' if current_is_direct else 'non-direct'}'.\n"
+            f"Use the same --direct flag as the original upload.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # Filter out files that no longer exist on disk
+    existing: list[str] = []
+    for path in failed_files:
+        if os.path.isfile(path):
+            existing.append(path)
+        else:
+            print(f"  WARNING: Skipping missing file: {path}")
+
+    if not existing:
+        print("All previously failed files have been removed from disk — nothing to retry.")
+        sys.exit(0)
+
+    routing_mode = "direct" if direct else "single"
+    routing = build_routing_plan(existing, source_dir, direct=direct, base_mailbox=base_mailbox)
+
+    # Re-derive routing_mode to match what run_upload expects
+    if not direct and len(routing) > 1:
+        routing_mode = "routed"
+
+    return existing, routing, routing_mode
+
+
 # ── EML sanitisation ─────────────────────────────────────────────────────
 
 
@@ -179,6 +238,66 @@ def sanitize_eml_headers(raw: bytes) -> bytes:
         cleaned.append(line)
 
     return line_end.join(cleaned) + rest
+
+
+def _strip_non_ascii_headers(raw: bytes) -> bytes:
+    """Replace non-ASCII bytes in the header section with '?'.
+
+    iCloud's IMAP server rejects messages whose headers contain raw 8-bit
+    bytes (RFC 5322 requires 7-bit headers).  Proton exports of Gmail
+    imports sometimes include unencoded UTF-8 in headers like
+    ``X-Gmail-Labels`` or ``X-Attached``.
+    """
+    for sep in (b"\r\n\r\n", b"\n\n"):
+        pos = raw.find(sep)
+        if pos >= 0:
+            break
+    else:
+        return raw
+
+    header = raw[:pos]
+    if all(b <= 127 for b in header):
+        return raw  # fast path — already 7-bit clean
+
+    cleaned = bytes(b if b <= 127 else ord(b"?") for b in header)
+    return cleaned + raw[pos:]
+
+
+# ── Sent / Drafts flag helper ────────────────────────────────────────────────
+
+# iCloud system folders that expect the \Seen flag on APPEND.
+_SEEN_MAILBOXES: frozenset[str] = frozenset(
+    {
+        "Sent Messages",
+        "Drafts",
+        "Deleted Messages",
+        "Junk",
+    }
+)
+
+
+def _flags_for_mailbox(mailbox: str) -> str:
+    r"""Return IMAP flag string for *mailbox*.
+
+    Messages appended to Sent / Drafts / Trash / Junk are marked ``\Seen``
+    because iCloud's strict IMAP parser rejects unread messages in these
+    system folders.
+    """
+    if mailbox in _SEEN_MAILBOXES:
+        return r"\Seen"
+    return ""
+
+
+def _quote_mailbox(name: str) -> str:
+    """Quote an IMAP mailbox name if it contains spaces.
+
+    Python's ``imaplib`` does **not** quote mailbox arguments.  Names with
+    spaces (e.g. ``Sent Messages``) are sent verbatim, which causes the
+    server to misparse the APPEND command → ``BAD Parse Error``.
+    """
+    if " " in name:
+        return f'"{name}"'
+    return name
 
 
 # ── Core upload loop ─────────────────────────────────────────────────────────
@@ -243,14 +362,17 @@ def upload_eml_files(
 
         # Sanitise headers that iCloud's strict parser rejects
         raw_message = sanitize_eml_headers(raw_message)
+        raw_message = _strip_non_ascii_headers(raw_message)
 
         # Extract original Date for IMAP internal date
         internal_date = parse_date_from_eml(raw_message)
 
         # IMAP APPEND
         try:
-            flags = ""  # No flags — appears as unread
-            status, response = conn.append(target, flags, internal_date, raw_message)
+            flags = _flags_for_mailbox(target)
+            status, response = conn.append(
+                _quote_mailbox(target), flags, internal_date, raw_message
+            )
 
             if status == "OK":
                 uploaded += 1
@@ -407,7 +529,7 @@ def _print_summary(
             for path in failed_files:
                 f.write(path + "\n")
         print(f"\nFailed file paths written to: {fail_log}")
-        print("You can inspect and retry these files manually.")
+        print("To retry just the failed files: --retry-failed")
 
 
 # ── CLI orchestrator ─────────────────────────────────────────────────────────
@@ -502,6 +624,14 @@ def run_upload(args: Namespace) -> None:
 
     source = args.source
     direct = args.direct
+    retry_failed = args.retry_failed
+
+    if retry_failed and args.resume_from != 0:
+        print(
+            "Error: --retry-failed and --resume-from are mutually exclusive.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     if not os.path.isdir(source):
         print(f"Error: Source directory does not exist: {source}", file=sys.stderr)
@@ -513,27 +643,40 @@ def run_upload(args: Namespace) -> None:
         print("Routing mode:    --direct (native iCloud folders)")
     print()
 
-    eml_files = collect_eml_files(source)
-    total = len(eml_files)
+    if retry_failed:
+        # ── Retry path ────────────────────────────────────────────────
+        eml_files, routing, routing_mode = _prepare_retry_files(
+            source, direct=direct, base_mailbox=args.mailbox
+        )
+        total = len(eml_files)
+        resume_from = 0
+        print(f"Retrying {total:,} failed files from previous run...")
+        print_routing_summary(routing)
+    else:
+        # ── Normal path ───────────────────────────────────────────────
+        eml_files = collect_eml_files(source)
+        total = len(eml_files)
 
-    if total == 0:
-        print(f"No .eml files found under {source}")
-        sys.exit(1)
+        if total == 0:
+            print(f"No .eml files found under {source}")
+            sys.exit(1)
 
-    print(f"Found {total:,} .eml files.")
+        print(f"Found {total:,} .eml files.")
 
-    # ── Build routing plan ────────────────────────────────────────────
-    print(f"Reading metadata for {total:,} emails...")
-    routing = build_routing_plan(eml_files, source, direct=direct, base_mailbox=args.mailbox)
-    print_routing_summary(routing)
+        # ── Build routing plan ────────────────────────────────────────
+        print(f"Reading metadata for {total:,} emails...")
+        routing = build_routing_plan(eml_files, source, direct=direct, base_mailbox=args.mailbox)
+        print_routing_summary(routing)
 
-    # Determine routing mode for state file
-    routing_mode = "direct" if direct else ("routed" if len(routing) > 1 else "single")
+        # Determine routing mode for state file
+        routing_mode = "direct" if direct else ("routed" if len(routing) > 1 else "single")
 
-    resume_from = _prompt_auto_resume(source, total, args.resume_from, routing_mode=routing_mode)
+        resume_from = _prompt_auto_resume(
+            source, total, args.resume_from, routing_mode=routing_mode
+        )
 
-    if resume_from > 0:
-        print(f"Skipping first {resume_from} files.")
+        if resume_from > 0:
+            print(f"Skipping first {resume_from} files.")
 
     remaining = total - resume_from
     est_seconds = remaining * EST_SECONDS_PER_MSG

@@ -2,7 +2,13 @@
 
 import os
 
+import pytest
+
 from proton_to_icloud.upload import (
+    _flags_for_mailbox,
+    _prepare_retry_files,
+    _quote_mailbox,
+    _strip_non_ascii_headers,
     collect_eml_files,
     load_state,
     parse_date_from_eml,
@@ -152,3 +158,181 @@ class TestSanitizeEmlHeaders:
         assert b"X-A" not in result
         assert b"X-B" not in result
         assert b"Subject: Hi" in result
+
+
+class TestPrepareRetryFiles:
+    def test_loads_failed_files_from_state(self, tmp_path):
+        """Happy path: state has failed files that exist on disk."""
+        eml_a = tmp_path / "a.eml"
+        eml_b = tmp_path / "b.eml"
+        eml_a.write_text("fake")
+        eml_b.write_text("fake")
+
+        save_state(
+            str(tmp_path),
+            99,
+            98,
+            2,
+            [str(eml_a), str(eml_b)],
+            "Proton-Import",
+            routing_mode="single",
+        )
+
+        files, routing, mode = _prepare_retry_files(
+            str(tmp_path), direct=False, base_mailbox="Proton-Import"
+        )
+        assert len(files) == 2
+        assert str(eml_a) in files
+        assert str(eml_b) in files
+        assert mode == "single"
+        # All files should appear in the routing plan
+        all_routed = [p for paths in routing.values() for p in paths]
+        assert set(all_routed) == {str(eml_a), str(eml_b)}
+
+    def test_exits_when_no_state_file(self, tmp_path):
+        """No state file → exit with code 1."""
+        with pytest.raises(SystemExit, match="1"):
+            _prepare_retry_files(str(tmp_path), direct=False, base_mailbox="INBOX")
+
+    def test_exits_when_failed_files_empty(self, tmp_path):
+        """State exists but failed_files is empty → exit with code 0."""
+        save_state(str(tmp_path), 99, 100, 0, [], "INBOX", routing_mode="single")
+
+        with pytest.raises(SystemExit, match="0"):
+            _prepare_retry_files(str(tmp_path), direct=False, base_mailbox="INBOX")
+
+    def test_skips_missing_files_with_warning(self, tmp_path, capsys):
+        """Files that no longer exist on disk are skipped with a warning."""
+        eml_exists = tmp_path / "exists.eml"
+        eml_exists.write_text("fake")
+        missing_path = str(tmp_path / "gone.eml")
+
+        save_state(
+            str(tmp_path),
+            99,
+            98,
+            2,
+            [str(eml_exists), missing_path],
+            "INBOX",
+            routing_mode="single",
+        )
+
+        files, _routing, _mode = _prepare_retry_files(
+            str(tmp_path), direct=False, base_mailbox="INBOX"
+        )
+        assert len(files) == 1
+        assert str(eml_exists) in files
+        captured = capsys.readouterr()
+        assert "gone.eml" in captured.out
+
+    def test_exits_when_all_files_missing(self, tmp_path):
+        """All failed files removed from disk → exit with code 0."""
+        save_state(
+            str(tmp_path),
+            99,
+            98,
+            2,
+            [str(tmp_path / "a.eml"), str(tmp_path / "b.eml")],
+            "INBOX",
+            routing_mode="single",
+        )
+
+        with pytest.raises(SystemExit, match="0"):
+            _prepare_retry_files(str(tmp_path), direct=False, base_mailbox="INBOX")
+
+    def test_validates_routing_mode_mismatch(self, tmp_path):
+        """Saved direct mode + current non-direct flags → exit with code 1."""
+        eml = tmp_path / "a.eml"
+        eml.write_text("fake")
+        save_state(
+            str(tmp_path),
+            99,
+            99,
+            1,
+            [str(eml)],
+            "INBOX",
+            routing_mode="direct",
+        )
+
+        with pytest.raises(SystemExit, match="1"):
+            _prepare_retry_files(str(tmp_path), direct=False, base_mailbox="INBOX")
+
+    def test_validates_routing_mode_mismatch_reverse(self, tmp_path):
+        """Saved non-direct mode + current --direct flag → exit with code 1."""
+        eml = tmp_path / "a.eml"
+        eml.write_text("fake")
+        save_state(
+            str(tmp_path),
+            99,
+            99,
+            1,
+            [str(eml)],
+            "INBOX",
+            routing_mode="single",
+        )
+
+        with pytest.raises(SystemExit, match="1"):
+            _prepare_retry_files(str(tmp_path), direct=True, base_mailbox="INBOX")
+
+
+class TestQuoteMailbox:
+    """imaplib does not quote mailbox names; we must do it ourselves."""
+
+    def test_quotes_name_with_space(self):
+        assert _quote_mailbox("Sent Messages") == '"Sent Messages"'
+
+    def test_quotes_name_with_multiple_spaces(self):
+        assert _quote_mailbox("Deleted Messages") == '"Deleted Messages"'
+
+    def test_no_quotes_for_simple_name(self):
+        assert _quote_mailbox("INBOX") == "INBOX"
+
+    def test_no_quotes_for_path_without_spaces(self):
+        assert _quote_mailbox("Proton-Import/Sent") == "Proton-Import/Sent"
+
+    def test_quotes_subfolder_with_space(self):
+        assert _quote_mailbox("Proton Import/Sent") == '"Proton Import/Sent"'
+
+
+class TestFlagsForMailbox:
+    def test_seen_for_sent_messages(self):
+        assert _flags_for_mailbox("Sent Messages") == r"\Seen"
+
+    def test_seen_for_drafts(self):
+        assert _flags_for_mailbox("Drafts") == r"\Seen"
+
+    def test_seen_for_deleted_messages(self):
+        assert _flags_for_mailbox("Deleted Messages") == r"\Seen"
+
+    def test_seen_for_junk(self):
+        assert _flags_for_mailbox("Junk") == r"\Seen"
+
+    def test_no_flags_for_inbox(self):
+        assert _flags_for_mailbox("INBOX") == ""
+
+    def test_no_flags_for_archive(self):
+        assert _flags_for_mailbox("Archive") == ""
+
+    def test_no_flags_for_custom_folder(self):
+        assert _flags_for_mailbox("Proton-Import") == ""
+
+
+class TestStripNonAsciiHeaders:
+    def test_replaces_non_ascii_in_headers(self):
+        raw = b"X-Label: Ge\xc3\xb6ffnet\r\nFrom: a@b.com\r\n\r\nBody"
+        result = _strip_non_ascii_headers(raw)
+        assert b"\xc3" not in result[: result.find(b"\r\n\r\n")]
+        assert result.endswith(b"\r\n\r\nBody")
+
+    def test_preserves_ascii_only_headers(self):
+        raw = b"From: a@b.com\r\nSubject: Hello\r\n\r\nBody"
+        assert _strip_non_ascii_headers(raw) == raw
+
+    def test_preserves_non_ascii_in_body(self):
+        raw = b"From: a@b.com\r\n\r\nBody with \xc3\xb6 umlaut"
+        result = _strip_non_ascii_headers(raw)
+        assert b"\xc3\xb6" in result
+
+    def test_no_body_separator_returns_unchanged(self):
+        raw = b"From: a@b.com\r\nX-Label: \xc3\xb6"
+        assert _strip_non_ascii_headers(raw) == raw
