@@ -28,7 +28,7 @@ Zero-dependency Python CLI tool that uploads Proton Mail .eml exports to iCloud 
 - Zero external dependencies (stdlib only) — no dependency conflicts when installed globally
 - Uses argparse, not click/typer
 - src/ layout with hatchling build backend, managed by uv
-- Python >=3.11
+- Python >=3.11 (do NOT use 3.10+ only features like `ExceptionGroup`; keep compatible)
 
 ## IMAP pitfalls
 
