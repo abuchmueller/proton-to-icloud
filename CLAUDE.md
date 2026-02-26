@@ -30,6 +30,18 @@ Zero-dependency Python CLI tool that uploads Proton Mail .eml exports to iCloud 
 - src/ layout with hatchling build backend, managed by uv
 - Python >=3.11
 
+## IMAP pitfalls
+
+- **Always quote mailbox names** before passing to `imaplib` methods (`append`,
+  `select`, `create`, etc.).  Python's `imaplib` does **not** quote arguments,
+  so names with spaces (e.g. `Sent Messages`, `Deleted Messages`) are sent
+  unquoted on the wire, causing `BAD Parse Error` on the server.  Use the
+  `_quote_mailbox()` helper in `upload.py`.
+- **System folders need `\Seen`** — iCloud rejects unseen messages appended to
+  Sent Messages, Drafts, Deleted Messages, and Junk.  Use `_flags_for_mailbox()`.
+- **Sanitise headers** — Proton exports of Gmail imports may contain non-ASCII
+  bytes or empty-value headers that iCloud's strict parser rejects.
+
 ## Linting
 
 - Ruff, line-length 100

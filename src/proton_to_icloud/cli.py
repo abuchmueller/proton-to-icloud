@@ -69,6 +69,12 @@ Examples:
         help="Skip the first N files (for manual resume). Default: 0.",
     )
     upload_p.add_argument(
+        "--retry-failed",
+        action="store_true",
+        help="Retry only the files that failed in the previous run "
+        "(read from the state file). Mutually exclusive with --resume-from.",
+    )
+    upload_p.add_argument(
         "--direct",
         action="store_true",
         help="Route directly into native iCloud folders (INBOX, Sent Messages, etc.) "
