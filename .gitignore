@@ -19,6 +19,9 @@ wheels/
 .DS_Store
 Thumbs.db
 
+# mise
+.mise.local.toml
+
 # Project-specific
 .imap_upload_state.json
 failed_uploads.txt
