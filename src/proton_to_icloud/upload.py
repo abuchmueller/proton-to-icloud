@@ -288,6 +288,16 @@ def _flags_for_mailbox(mailbox: str) -> str:
     return ""
 
 
+def _is_unavailable(response: list) -> bool:
+    """Return True if the IMAP response contains ``[UNAVAILABLE]``."""
+    for item in response:
+        if isinstance(item, bytes) and b"[UNAVAILABLE]" in item:
+            return True
+        if isinstance(item, str) and "[UNAVAILABLE]" in item:
+            return True
+    return False
+
+
 def _quote_mailbox(name: str) -> str:
     """Quote an IMAP mailbox name if it contains spaces.
 
@@ -373,6 +383,12 @@ def upload_eml_files(
             status, response = conn.append(
                 _quote_mailbox(target), flags, internal_date, raw_message
             )
+
+            # iCloud's IMAP server sometimes returns [UNAVAILABLE] when the
+            # internal date triggers a server-side bug.  Retry once without
+            # the date so iCloud uses the current time instead.
+            if status != "OK" and internal_date is not None and _is_unavailable(response):
+                status, response = conn.append(_quote_mailbox(target), flags, None, raw_message)
 
             if status == "OK":
                 uploaded += 1
