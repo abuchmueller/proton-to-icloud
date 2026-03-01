@@ -6,6 +6,7 @@ import pytest
 
 from proton_to_icloud.upload import (
     _flags_for_mailbox,
+    _is_unavailable,
     _prepare_retry_files,
     _quote_mailbox,
     _strip_non_ascii_headers,
@@ -336,3 +337,17 @@ class TestStripNonAsciiHeaders:
     def test_no_body_separator_returns_unchanged(self):
         raw = b"From: a@b.com\r\nX-Label: \xc3\xb6"
         assert _strip_non_ascii_headers(raw) == raw
+
+
+class TestIsUnavailable:
+    def test_detects_bytes_response(self):
+        assert _is_unavailable([b"[UNAVAILABLE] Unexpected exception (took 357 ms)"])
+
+    def test_detects_string_response(self):
+        assert _is_unavailable(["[UNAVAILABLE] Unexpected exception"])
+
+    def test_ignores_other_errors(self):
+        assert not _is_unavailable([b"[TRYCREATE] Mailbox does not exist"])
+
+    def test_empty_response(self):
+        assert not _is_unavailable([])
