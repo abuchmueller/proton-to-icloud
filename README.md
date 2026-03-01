@@ -187,6 +187,15 @@ uv run ruff check src/ tests/  # Lint
 uv run ruff format src/ tests/ # Format
 ```
 
+## Claude Code Integration
+
+If you use [Claude Code](https://claude.com/claude-code), this repo includes two project-level skills:
+
+- **`/upload-guide`** — Interactive walkthrough that helps you construct the right upload command, choose routing modes, and handle long-running uploads.
+- **`/diagnose-failures`** — Automated diagnostic workflow for investigating upload failures (header analysis, IMAP test matrix, root-cause suggestions).
+
+These are optional — the CLI and this README are the primary interface.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

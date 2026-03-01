@@ -42,6 +42,11 @@ Zero-dependency Python CLI tool that uploads Proton Mail .eml exports to iCloud 
 - **Sanitise headers** — Proton exports of Gmail imports may contain non-ASCII
   bytes or empty-value headers that iCloud's strict parser rejects.
 
+## Claude Code skills
+
+- `/upload-guide` — Interactive walkthrough for uploading emails to iCloud
+- `/diagnose-failures` — Diagnose and fix upload failures
+
 ## Linting
 
 - Ruff, line-length 100
