@@ -388,9 +388,7 @@ def upload_eml_files(
             # internal date triggers a server-side bug.  Retry once without
             # the date so iCloud uses the current time instead.
             if status != "OK" and internal_date is not None and _is_unavailable(response):
-                status, response = conn.append(
-                    _quote_mailbox(target), flags, None, raw_message
-                )
+                status, response = conn.append(_quote_mailbox(target), flags, None, raw_message)
 
             if status == "OK":
                 uploaded += 1
