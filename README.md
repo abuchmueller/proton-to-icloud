@@ -1,5 +1,12 @@
 # proton-to-icloud
 
+[![PyPI](https://img.shields.io/pypi/v/proton-to-icloud)](https://pypi.org/project/proton-to-icloud/)
+[![Python](https://img.shields.io/pypi/pyversions/proton-to-icloud)](https://pypi.org/project/proton-to-icloud/)
+[![CI](https://github.com/abuchmueller/proton-to-icloud/actions/workflows/ci.yml/badge.svg)](https://github.com/abuchmueller/proton-to-icloud/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![No Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen)](https://github.com/abuchmueller/proton-to-icloud)
+
 Migrate Proton Mail exports (`.eml` files) to iCloud Mail via IMAP.
 
 ## Why?
