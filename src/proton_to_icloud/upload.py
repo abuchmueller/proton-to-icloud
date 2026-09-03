@@ -10,7 +10,16 @@ import time
 from argparse import Namespace
 from datetime import datetime
 
-from proton_to_icloud.metadata import build_routing_plan, filter_since, print_routing_summary
+from proton_to_icloud.metadata import (
+    build_routing_plan,
+    filter_since,
+    print_routing_summary,
+)
+from proton_to_icloud.msgid import (
+    classify_eml_files,
+    collect_existing_message_ids,
+    extract_message_id_from_eml,
+)
 from proton_to_icloud.progress import format_duration, print_progress
 
 # ── iCloud IMAP settings ─────────────────────────────────────────────────────
@@ -340,6 +349,39 @@ def _quote_mailbox(name: str) -> str:
     return name
 
 
+def _is_duplicate(msgid: str | None, existing_ids: set[str] | None) -> bool:
+    return existing_ids is not None and msgid is not None and msgid in existing_ids
+
+
+def _append_with_retry(
+    conn: imaplib.IMAP4_SSL, target: str, raw_message: bytes, internal_date: str | None
+) -> tuple[str, list]:
+    """APPEND once, retrying without the date if iCloud returns UNAVAILABLE."""
+    flags = _flags_for_mailbox(target)
+    status, response = conn.append(_quote_mailbox(target), flags, internal_date, raw_message)
+    if status != "OK" and internal_date is not None and _is_unavailable(response):
+        status, response = conn.append(_quote_mailbox(target), flags, None, raw_message)
+    return status, response
+
+
+def _try_reconnect(conn: imaplib.IMAP4_SSL, reconnect):
+    """Return ``(conn, reconnect)`` after probing the connection."""
+    if not reconnect:
+        return conn, reconnect
+    try:
+        conn.noop()
+        return conn, reconnect
+    except Exception:
+        try:
+            print("  Connection lost. Reconnecting...")
+            conn = reconnect()
+            print("  Reconnected successfully.")
+            return conn, reconnect
+        except Exception:
+            print("  ERROR: Could not reconnect.")
+            return conn, None
+
+
 # ── Core upload loop ─────────────────────────────────────────────────────────
 
 
@@ -352,7 +394,8 @@ def upload_eml_files(
     routing: dict[str, list[str]] | None = None,
     routing_mode: str = "single",
     reconnect=None,
-) -> tuple[int, int, int, list[str]]:
+    existing_ids: set[str] | None = None,
+) -> tuple[int, int, int, int, list[str]]:
     """Upload .eml file paths to the IMAP mailbox via APPEND.
 
     When *routing* is provided, each file is uploaded to its resolved target
@@ -362,7 +405,11 @@ def upload_eml_files(
     fresh ``IMAP4_SSL`` connection.  It is invoked automatically when the
     connection drops mid-upload.
 
-    Returns (uploaded, skipped, failed, failed_files).
+    When *existing_ids* is a set, emails whose Message-ID is already in it
+    are skipped. Successful uploads are added to the set so intra-export
+    duplicates are also skipped.
+
+    Returns (uploaded, skipped, skipped_existing, failed, failed_files).
     """
     # Build reverse lookup: filepath → target mailbox
     file_to_mailbox: dict[str, str] = {}
@@ -375,6 +422,7 @@ def upload_eml_files(
     remaining = total - resume_from
     uploaded = 0
     skipped = 0
+    skipped_existing = 0
     failed = 0
     failed_files: list[str] = []
     processed = 0
@@ -397,7 +445,14 @@ def upload_eml_files(
             failed += 1
             failed_files.append(filepath)
             processed += 1
-            print_progress(processed, remaining, uploaded, failed, start_time)
+            print_progress(processed, remaining, uploaded, failed, start_time, skipped_existing)
+            continue
+
+        msgid = extract_message_id_from_eml(raw_message)
+        if _is_duplicate(msgid, existing_ids):
+            skipped_existing += 1
+            processed += 1
+            print_progress(processed, remaining, uploaded, failed, start_time, skipped_existing)
             continue
 
         # Sanitise headers that iCloud's strict parser rejects
@@ -409,19 +464,11 @@ def upload_eml_files(
 
         # IMAP APPEND
         try:
-            flags = _flags_for_mailbox(target)
-            status, response = conn.append(
-                _quote_mailbox(target), flags, internal_date, raw_message
-            )
-
-            # iCloud's IMAP server sometimes returns [UNAVAILABLE] when the
-            # internal date triggers a server-side bug.  Retry once without
-            # the date so iCloud uses the current time instead.
-            if status != "OK" and internal_date is not None and _is_unavailable(response):
-                status, response = conn.append(_quote_mailbox(target), flags, None, raw_message)
-
+            status, response = _append_with_retry(conn, target, raw_message, internal_date)
             if status == "OK":
                 uploaded += 1
+                if existing_ids is not None and msgid is not None:
+                    existing_ids.add(msgid)
             else:
                 sys.stdout.write("\n")
                 print(f"  WARNING: APPEND failed for {os.path.basename(filepath)}: {response}")
@@ -433,22 +480,10 @@ def upload_eml_files(
             print(f"  WARNING: IMAP error for {os.path.basename(filepath)}: {e}")
             failed += 1
             failed_files.append(filepath)
-
-            # Check whether the connection is still alive; reconnect if needed
-            if reconnect:
-                try:
-                    conn.noop()
-                except Exception:
-                    try:
-                        print("  Connection lost. Reconnecting...")
-                        conn = reconnect()
-                        print("  Reconnected successfully.")
-                    except Exception:
-                        print("  ERROR: Could not reconnect.")
-                        reconnect = None  # stop retrying on every subsequent file
+            conn, reconnect = _try_reconnect(conn, reconnect)
 
         processed += 1
-        print_progress(processed, remaining, uploaded, failed, start_time)
+        print_progress(processed, remaining, uploaded, failed, start_time, skipped_existing)
 
         # Save state periodically for resume
         if processed % BATCH_LOG_INTERVAL == 0:
@@ -458,12 +493,12 @@ def upload_eml_files(
             time.sleep(SLEEP_PER_MESSAGE)
 
     # Final progress bar at 100%
-    print_progress(processed, remaining, uploaded, failed, start_time)
+    print_progress(processed, remaining, uploaded, failed, start_time, skipped_existing)
     sys.stdout.write("\n")
 
     save_state(source_dir, total - 1, uploaded, failed, failed_files, mailbox_name, routing_mode)
 
-    return uploaded, skipped, failed, failed_files
+    return uploaded, skipped, skipped_existing, failed, failed_files
 
 
 # ── CLI helpers ──────────────────────────────────────────────────────────────
@@ -546,6 +581,7 @@ def _print_summary(
     elapsed: float,
     source: str,
     routing: dict[str, list[str]] | None = None,
+    skipped_existing: int = 0,
 ) -> None:
     """Print the final upload summary and handle failure log."""
     print()
@@ -554,6 +590,7 @@ def _print_summary(
     print("=" * 60)
     print(f"  Total .eml files found:  {total}")
     print(f"  Skipped (--resume-from): {skipped}")
+    print(f"  Skipped (already in iCloud): {skipped_existing}")
     print(f"  Uploaded successfully:   {uploaded}")
     print(f"  Failed:                  {failed}")
     if routing and len(routing) > 1:
@@ -620,10 +657,11 @@ def _run_upload_loop(
     routing: dict[str, list[str]],
     routing_mode: str = "single",
     reconnect=None,
-) -> tuple[int, int, int, list[str], float]:
+    existing_ids: set[str] | None = None,
+) -> tuple[int, int, int, int, list[str], float]:
     """Execute the upload loop, handling Ctrl-C gracefully.
 
-    Returns (uploaded, skipped, failed, failed_files, elapsed).
+    Returns (uploaded, skipped, skipped_existing, failed, failed_files, elapsed).
     """
     remaining = len(eml_files) - resume_from
     print(f"Starting upload of {remaining:,} files ...")
@@ -631,7 +669,7 @@ def _run_upload_loop(
 
     start_time = time.time()
     try:
-        uploaded, skipped, failed, failed_files = upload_eml_files(
+        uploaded, skipped, skipped_existing, failed, failed_files = upload_eml_files(
             conn,
             eml_files,
             mailbox,
@@ -640,6 +678,7 @@ def _run_upload_loop(
             routing=routing,
             routing_mode=routing_mode,
             reconnect=reconnect,
+            existing_ids=existing_ids,
         )
     except KeyboardInterrupt:
         elapsed = time.time() - start_time
@@ -662,7 +701,89 @@ def _run_upload_loop(
             print("Re-run the same command to resume.")
         sys.exit(130)
 
-    return uploaded, skipped, failed, failed_files, time.time() - start_time
+    return uploaded, skipped, skipped_existing, failed, failed_files, time.time() - start_time
+
+
+def _print_offline_dry_run(routing: dict[str, list[str]]) -> None:
+    print("DRY RUN — no connection made, no files uploaded.")
+    for folder in sorted(routing, key=lambda f: (-len(routing[f]), f)):
+        count = len(routing[folder])
+        print(f"  Would upload {count:,} files to '{folder}'.")
+
+
+def _collect_and_report_existing(
+    conn: imaplib.IMAP4_SSL,
+    eml_files: list[str],
+    resume_from: int,
+    dry_run: bool,
+) -> set[str]:
+    """Scan iCloud Message-IDs, print skip stats, and exit on dry-run."""
+    print("Scanning iCloud for existing Message-IDs ...")
+    print("  (Trash, Junk, and Notes are ignored.)")
+    existing_ids = collect_existing_message_ids(conn)
+    print(f"Found {len(existing_ids):,} unique Message-IDs in iCloud.")
+    if not existing_ids:
+        print("  WARNING: none found — every email with a Message-ID will be uploaded.")
+    pending = eml_files[resume_from:]
+    would_upload, would_skip, missing = classify_eml_files(pending, existing_ids)
+    print(f"  Already in iCloud (will skip): {would_skip:,}")
+    print(f"  No Message-ID (will upload):   {missing:,}")
+    print(f"  To upload:                     {would_upload:,}")
+    print()
+    print(
+        f"Estimated time: ~{format_duration(would_upload * EST_SECONDS_PER_MSG)} "
+        f"for {would_upload:,} files."
+    )
+    print()
+    if dry_run:
+        print("DRY RUN — no files uploaded.")
+        try:
+            conn.logout()
+        except Exception:
+            pass
+        sys.exit(0)
+    return existing_ids
+
+
+def _load_upload_plan(
+    args: Namespace,
+) -> tuple[list[str], dict[str, list[str]], str, int, int]:
+    """Resolve source files, routing, and resume index.
+
+    Returns ``(eml_files, routing, routing_mode, total, resume_from)``.
+    """
+    source = args.source
+    direct = args.direct
+    if args.retry_failed:
+        eml_files, routing, routing_mode = _prepare_retry_files(
+            source, direct=direct, base_mailbox=args.mailbox, since=args.since
+        )
+        total = len(eml_files)
+        print(f"Retrying {total:,} failed files from previous run...")
+        print_routing_summary(routing)
+        return eml_files, routing, routing_mode, total, 0
+
+    eml_files = collect_eml_files(source)
+    total = len(eml_files)
+    if total == 0:
+        print(f"No .eml files found under {source}")
+        sys.exit(1)
+
+    print(f"Found {total:,} .eml files.")
+    eml_files = _apply_since_filter(
+        eml_files,
+        args.since,
+        empty_message="No emails received since the --since cutoff — nothing to upload.",
+    )
+    total = len(eml_files)
+    print(f"Reading metadata for {total:,} emails...")
+    routing = build_routing_plan(eml_files, source, direct=direct, base_mailbox=args.mailbox)
+    print_routing_summary(routing)
+    routing_mode = "direct" if direct else ("routed" if len(routing) > 1 else "single")
+    resume_from = _prompt_auto_resume(source, total, args.resume_from, routing_mode=routing_mode)
+    if resume_from > 0:
+        print(f"Skipping first {resume_from} files.")
+    return eml_files, routing, routing_mode, total, resume_from
 
 
 def run_upload(args: Namespace) -> None:
@@ -671,7 +792,6 @@ def run_upload(args: Namespace) -> None:
     source = args.source
     direct = args.direct
     retry_failed = args.retry_failed
-    since = getattr(args, "since", None)
 
     if retry_failed and args.resume_from != 0:
         print(
@@ -684,65 +804,27 @@ def run_upload(args: Namespace) -> None:
         print(f"Error: Source directory does not exist: {source}", file=sys.stderr)
         sys.exit(1)
 
+    skip_existing = bool(getattr(args, "skip_existing", False))
+
     print(f"Source directory: {source}")
     print(f"Target mailbox:  {args.mailbox}")
     if direct:
         print("Routing mode:    --direct (native iCloud folders)")
+    if skip_existing:
+        print("Duplicate filter: --skip-existing (Message-ID vs iCloud)")
     print()
 
-    if retry_failed:
-        # ── Retry path ────────────────────────────────────────────────
-        eml_files, routing, routing_mode = _prepare_retry_files(
-            source, direct=direct, base_mailbox=args.mailbox, since=since
-        )
-        total = len(eml_files)
-        resume_from = 0
-        print(f"Retrying {total:,} failed files from previous run...")
-        print_routing_summary(routing)
-    else:
-        # ── Normal path ───────────────────────────────────────────────
-        eml_files = collect_eml_files(source)
-        total = len(eml_files)
-
-        if total == 0:
-            print(f"No .eml files found under {source}")
-            sys.exit(1)
-
-        print(f"Found {total:,} .eml files.")
-
-        eml_files = _apply_since_filter(
-            eml_files,
-            since,
-            empty_message="No emails received since the --since cutoff — nothing to upload.",
-        )
-        total = len(eml_files)
-
-        # ── Build routing plan ────────────────────────────────────────
-        print(f"Reading metadata for {total:,} emails...")
-        routing = build_routing_plan(eml_files, source, direct=direct, base_mailbox=args.mailbox)
-        print_routing_summary(routing)
-
-        # Determine routing mode for state file
-        routing_mode = "direct" if direct else ("routed" if len(routing) > 1 else "single")
-
-        resume_from = _prompt_auto_resume(
-            source, total, args.resume_from, routing_mode=routing_mode
-        )
-
-        if resume_from > 0:
-            print(f"Skipping first {resume_from} files.")
+    eml_files, routing, routing_mode, total, resume_from = _load_upload_plan(args)
 
     remaining = total - resume_from
-    est_seconds = remaining * EST_SECONDS_PER_MSG
-    print(f"Estimated time: ~{format_duration(est_seconds)} for {remaining:,} files.")
-    print()
+    if not skip_existing:
+        est_seconds = remaining * EST_SECONDS_PER_MSG
+        print(f"Estimated time: ~{format_duration(est_seconds)} for {remaining:,} files.")
+        print()
 
-    # ── Dry run ───────────────────────────────────────────────────────
-    if args.dry_run:
-        print("DRY RUN — no connection made, no files uploaded.")
-        for folder in sorted(routing, key=lambda f: (-len(routing[f]), f)):
-            count = len(routing[folder])
-            print(f"  Would upload {count:,} files to '{folder}'.")
+    # ── Dry run without IMAP ──────────────────────────────────────────
+    if args.dry_run and not skip_existing:
+        _print_offline_dry_run(routing)
         sys.exit(0)
 
     # ── Get password ──────────────────────────────────────────────────
@@ -758,13 +840,25 @@ def run_upload(args: Namespace) -> None:
         c.login(args.email, password)
         return c
 
+    existing_ids: set[str] | None = None
+    if skip_existing:
+        existing_ids = _collect_and_report_existing(conn, eml_files, resume_from, args.dry_run)
+
     # ── Ensure target mailboxes exist ─────────────────────────────────
     if not args.no_create_mailbox:
         _ensure_all_mailboxes(conn, routing)
 
     # ── Upload ────────────────────────────────────────────────────────
-    uploaded, skipped, failed, failed_files, elapsed = _run_upload_loop(
-        conn, eml_files, args.mailbox, source, resume_from, routing, routing_mode, reconnect
+    uploaded, skipped, skipped_existing, failed, failed_files, elapsed = _run_upload_loop(
+        conn,
+        eml_files,
+        args.mailbox,
+        source,
+        resume_from,
+        routing,
+        routing_mode,
+        reconnect,
+        existing_ids=existing_ids,
     )
 
     try:
@@ -782,6 +876,7 @@ def run_upload(args: Namespace) -> None:
         elapsed,
         source,
         routing=routing,
+        skipped_existing=skipped_existing,
     )
 
     if failed == 0:

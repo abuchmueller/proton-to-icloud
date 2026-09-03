@@ -36,7 +36,10 @@ with `pipx` or `uv tool install`.
 - **Zero dependencies** — stdlib only, no conflicts when installed globally
 - **Folder routing** — automatically routes emails to the correct IMAP
   folders (Inbox, Sent, Archive, etc.) based on Proton metadata
-- **Dry-run mode** — scan and count files without connecting or uploading
+- **Skip existing** — optional `--skip-existing` matches `Message-ID`
+  against iCloud and skips emails that are already there
+- **Dry-run mode** — scan and count files without uploading (connects to
+  iCloud when combined with `--skip-existing`)
 
 ## Installation
 
@@ -100,6 +103,22 @@ proton-to-icloud upload \
 
 You'll be prompted securely for the app-specific password.
 
+If some mail may already be in iCloud (from a previous import or from using
+the account before Proton), add `--skip-existing`:
+
+```bash
+proton-to-icloud upload \
+  --source "your.address@pm.me/mail_20260223_210229" \
+  --email you@icloud.com \
+  --skip-existing
+```
+
+The tool scans iCloud folders for `Message-ID` headers and skips matches.
+Trash, Junk, and Notes are ignored for matching, so a Proton copy is still
+uploaded if iCloud only has it in the trash. Emails without a `Message-ID`
+are uploaded. Combined with `--dry-run`, it connects, reports skip/upload
+counts, and does not APPEND anything.
+
 **Options:**
 
 | Flag                  | Description                                    | Default          |
@@ -109,7 +128,8 @@ You'll be prompted securely for the app-specific password.
 | `-e`, `--email`       | Your iCloud / Apple ID email                   | *(required)*     |
 | `-p`, `--password`    | App-specific password (prompted if omitted)    | *(prompted)*     |
 | `--direct`            | Route into native iCloud folders instead of subfolders |            |
-| `--dry-run`           | Scan only, don't connect or upload             |                  |
+| `--skip-existing`     | Skip emails whose `Message-ID` already exists in iCloud |            |
+| `--dry-run`           | Scan and count without uploading. With `--skip-existing`, connects to compare Message-IDs |                  |
 | `--since DATETIME`    | Only upload emails received at or after this ISO 8601 date/time (local time unless an offset is given) |   |
 | `--resume-from N`     | Skip the first N files                         | `0`              |
 | `--no-create-mailbox` | Don't auto-create the target folder            |                  |
