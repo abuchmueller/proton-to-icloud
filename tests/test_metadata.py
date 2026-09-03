@@ -195,21 +195,21 @@ class TestResolveTargetFolder:
         assert result == "INBOX"
 
     def test_custom_label_direct_is_top_level(self):
-        labels = {**LABELS_MAP, "custom1": "Autonomo"}
+        labels = {**LABELS_MAP, "custom1": "Projects"}
         result = resolve_target_folder(
             ["custom1", "5"], labels, direct=True, base_mailbox="Proton-Import"
         )
-        assert result == "Autonomo"
+        assert result == "Projects"
 
     def test_custom_label_prefixed_uses_subfolder(self):
-        labels = {**LABELS_MAP, "custom1": "Autonomo"}
+        labels = {**LABELS_MAP, "custom1": "Projects"}
         result = resolve_target_folder(
             ["custom1", "5"], labels, direct=False, base_mailbox="Proton-Import"
         )
-        assert result == "Proton-Import/Autonomo"
+        assert result == "Proton-Import/Projects"
 
     def test_inbox_wins_over_custom_direct(self):
-        labels = {**LABELS_MAP, "custom1": "Autonomo"}
+        labels = {**LABELS_MAP, "custom1": "Projects"}
         result = resolve_target_folder(
             ["custom1", "0", "5"], labels, direct=True, base_mailbox="Proton-Import"
         )
