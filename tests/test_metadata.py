@@ -176,11 +176,44 @@ class TestResolveTargetFolder:
         )
         assert result == "Proton-Import"
 
+    def test_unknown_label_direct_goes_to_inbox(self):
+        result = resolve_target_folder(
+            ["999"], LABELS_MAP, direct=True, base_mailbox="Proton-Import"
+        )
+        assert result == "INBOX"
+
     def test_only_meta_labels_fallback(self):
         result = resolve_target_folder(
             ["5", "15", "10"], LABELS_MAP, direct=False, base_mailbox="Proton-Import"
         )
         assert result == "Proton-Import"
+
+    def test_only_meta_labels_direct_goes_to_inbox(self):
+        result = resolve_target_folder(
+            ["5", "15", "10"], LABELS_MAP, direct=True, base_mailbox="Proton-Import"
+        )
+        assert result == "INBOX"
+
+    def test_custom_label_direct_is_top_level(self):
+        labels = {**LABELS_MAP, "custom1": "Autonomo"}
+        result = resolve_target_folder(
+            ["custom1", "5"], labels, direct=True, base_mailbox="Proton-Import"
+        )
+        assert result == "Autonomo"
+
+    def test_custom_label_prefixed_uses_subfolder(self):
+        labels = {**LABELS_MAP, "custom1": "Autonomo"}
+        result = resolve_target_folder(
+            ["custom1", "5"], labels, direct=False, base_mailbox="Proton-Import"
+        )
+        assert result == "Proton-Import/Autonomo"
+
+    def test_inbox_wins_over_custom_direct(self):
+        labels = {**LABELS_MAP, "custom1": "Autonomo"}
+        result = resolve_target_folder(
+            ["custom1", "0", "5"], labels, direct=True, base_mailbox="Proton-Import"
+        )
+        assert result == "INBOX"
 
     def test_none_label_ids_fallback(self):
         result = resolve_target_folder(None, LABELS_MAP, direct=False, base_mailbox="Proton-Import")
