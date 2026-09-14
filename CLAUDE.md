@@ -11,6 +11,7 @@ uv run pytest                  # Run tests
 uv run ruff check src/ tests/  # Lint
 uv run ruff format src/ tests/ # Format
 uv build                       # Build sdist + wheel
+uv version --bump minor        # Bump version in pyproject.toml + uv.lock (release: CONTRIBUTING.md)
 ```
 
 ## Architecture
@@ -29,6 +30,8 @@ Zero-dependency Python CLI tool that uploads Proton Mail .eml exports to iCloud 
 - Uses argparse, not click/typer
 - src/ layout with hatchling build backend, managed by uv
 - Python >=3.11 (do NOT use 3.10+ only features like `ExceptionGroup`; keep compatible)
+- Version is single-sourced from `pyproject.toml`; `__version__` reads the installed
+  metadata via `importlib.metadata` — never hardcode it
 
 ## IMAP pitfalls
 
