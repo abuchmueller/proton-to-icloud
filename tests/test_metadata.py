@@ -2,12 +2,15 @@
 
 import json
 import os
+from datetime import datetime, timezone
 
 from proton_to_icloud.metadata import (
     build_routing_plan,
+    filter_since,
     load_labels,
     print_routing_summary,
     read_label_ids,
+    read_received_time,
     resolve_target_folder,
 )
 
@@ -287,3 +290,91 @@ class TestPrintRoutingSummary:
         assert "INBOX" in output
         assert "Archive" in output
         assert "3" in output
+
+
+# ── TestReadReceivedTime ─────────────────────────────────────────────────────
+
+# 2023-05-09 15:25:11 UTC
+SAMPLE_TIME = 1683645911
+
+
+def _write_metadata_time(path, time_value):
+    with open(path, "w") as f:
+        json.dump({"Version": 1, "Payload": {"LabelIDs": ["0"], "Time": time_value}}, f)
+
+
+class TestReadReceivedTime:
+    def test_flat_layout_uses_metadata_time(self, tmp_path):
+        eml = tmp_path / "msg.eml"
+        # Date header deliberately disagrees: metadata Time must win.
+        eml.write_text("Date: Mon, 1 Jan 2001 00:00:00 +0000\r\n\r\nbody")
+        _write_metadata_time(tmp_path / "msg.metadata.json", SAMPLE_TIME)
+        assert read_received_time(str(eml)) == SAMPLE_TIME
+
+    def test_split_layout_uses_metadata_time(self, tmp_path):
+        (tmp_path / "eml").mkdir()
+        (tmp_path / "json").mkdir()
+        eml = tmp_path / "eml" / "msg.eml"
+        eml.write_text("fake")
+        _write_metadata_time(tmp_path / "json" / "msg.metadata.json", SAMPLE_TIME)
+        assert read_received_time(str(eml)) == SAMPLE_TIME
+
+    def test_falls_back_to_date_header(self, tmp_path):
+        eml = tmp_path / "msg.eml"
+        eml.write_text("Subject: hi\r\nDate: Tue, 09 May 2023 17:25:11 +0200\r\n\r\nbody")
+        assert read_received_time(str(eml)) == SAMPLE_TIME
+
+    def test_falls_back_when_metadata_time_invalid(self, tmp_path):
+        eml = tmp_path / "msg.eml"
+        eml.write_text("Date: Tue, 09 May 2023 15:25:11 +0000\r\n\r\nbody")
+        _write_metadata_time(tmp_path / "msg.metadata.json", "not-a-number")
+        assert read_received_time(str(eml)) == SAMPLE_TIME
+
+    def test_ignores_date_in_body(self, tmp_path):
+        eml = tmp_path / "msg.eml"
+        eml.write_text("Subject: hi\r\n\r\nDate: Tue, 09 May 2023 15:25:11 +0000\r\n")
+        assert read_received_time(str(eml)) is None
+
+    def test_no_date_anywhere(self, tmp_path):
+        eml = tmp_path / "msg.eml"
+        eml.write_text("Subject: hi\r\n\r\nbody")
+        assert read_received_time(str(eml)) is None
+
+
+# ── TestFilterSince ──────────────────────────────────────────────────────────
+
+
+class TestFilterSince:
+    def _make(self, tmp_path, name, time_value):
+        eml = tmp_path / f"{name}.eml"
+        eml.write_text("fake")
+        if time_value is not None:
+            _write_metadata_time(tmp_path / f"{name}.metadata.json", time_value)
+        return str(eml)
+
+    def test_keeps_newer_and_drops_older(self, tmp_path):
+        old = self._make(tmp_path, "old", SAMPLE_TIME - 1)
+        exact = self._make(tmp_path, "exact", SAMPLE_TIME)
+        new = self._make(tmp_path, "new", SAMPLE_TIME + 1)
+        since = datetime.fromtimestamp(SAMPLE_TIME, tz=timezone.utc)
+
+        kept, excluded, undated = filter_since([old, exact, new], since)
+        assert kept == [exact, new]
+        assert excluded == 1
+        assert undated == []
+
+    def test_respects_timezone_of_cutoff(self, tmp_path):
+        msg = self._make(tmp_path, "msg", SAMPLE_TIME)  # 15:25:11 UTC
+        # 17:00 at +02:00 is 15:00 UTC → message is after the cutoff.
+        since = datetime.fromisoformat("2023-05-09T17:00+02:00")
+        kept, excluded, _ = filter_since([msg], since)
+        assert kept == [msg]
+        assert excluded == 0
+
+    def test_undated_files_are_kept_and_reported(self, tmp_path):
+        undated_file = self._make(tmp_path, "nodate", None)
+        since = datetime.fromtimestamp(SAMPLE_TIME, tz=timezone.utc)
+        kept, excluded, undated = filter_since([undated_file], since)
+        assert kept == [undated_file]
+        assert excluded == 0
+        assert undated == [undated_file]

@@ -110,6 +110,7 @@ You'll be prompted securely for the app-specific password.
 | `-p`, `--password`    | App-specific password (prompted if omitted)    | *(prompted)*     |
 | `--direct`            | Route into native iCloud folders instead of subfolders |            |
 | `--dry-run`           | Scan only, don't connect or upload             |                  |
+| `--since DATETIME`    | Only upload emails received at or after this ISO 8601 date/time (local time unless an offset is given) |   |
 | `--resume-from N`     | Skip the first N files                         | `0`              |
 | `--no-create-mailbox` | Don't auto-create the target folder            |                  |
 

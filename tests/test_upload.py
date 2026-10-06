@@ -1,6 +1,9 @@
 """Tests for proton_to_icloud.upload — pure-function tests only (no IMAP)."""
 
+import json
 import os
+from argparse import Namespace
+from datetime import datetime, timezone
 
 import pytest
 
@@ -13,6 +16,7 @@ from proton_to_icloud.upload import (
     collect_eml_files,
     load_state,
     parse_date_from_eml,
+    run_upload,
     sanitize_eml_headers,
     save_state,
 )
@@ -351,3 +355,61 @@ class TestIsUnavailable:
 
     def test_empty_response(self):
         assert not _is_unavailable([])
+
+
+class TestRunUploadSince:
+    """Dry-run ``run_upload`` with ``--since`` to check emails are filtered out."""
+
+    def _make(self, tmp_path, name, time_value):
+        (tmp_path / f"{name}.eml").write_text("fake")
+        with open(tmp_path / f"{name}.metadata.json", "w") as f:
+            json.dump({"Payload": {"LabelIDs": ["0"], "Time": time_value}}, f)
+
+    def _args(self, tmp_path, since):
+        return Namespace(
+            source=str(tmp_path),
+            mailbox="Proton-Import",
+            email="a@b.c",
+            password=None,
+            dry_run=True,
+            resume_from=0,
+            retry_failed=False,
+            direct=False,
+            no_create_mailbox=False,
+            since=since,
+        )
+
+    def test_dry_run_only_counts_newer_emails(self, tmp_path, capsys):
+        cutoff = datetime(2026, 9, 1, tzinfo=timezone.utc)
+        self._make(tmp_path, "old", int(cutoff.timestamp()) - 60)
+        self._make(tmp_path, "new1", int(cutoff.timestamp()) + 60)
+        self._make(tmp_path, "new2", int(cutoff.timestamp()) + 120)
+
+        with pytest.raises(SystemExit) as exc:
+            run_upload(self._args(tmp_path, cutoff))
+        assert exc.value.code == 0
+
+        out = capsys.readouterr().out
+        assert "2 kept, 1 skipped" in out
+        assert "Would upload 2 files to 'Proton-Import'." in out
+
+    def test_exits_cleanly_when_everything_is_older(self, tmp_path, capsys):
+        cutoff = datetime(2026, 9, 1, tzinfo=timezone.utc)
+        self._make(tmp_path, "old", int(cutoff.timestamp()) - 60)
+
+        with pytest.raises(SystemExit) as exc:
+            run_upload(self._args(tmp_path, cutoff))
+        assert exc.value.code == 0
+        assert "nothing to upload" in capsys.readouterr().out
+
+    def test_retry_failed_applies_since(self, tmp_path):
+        cutoff = datetime(2026, 9, 1, tzinfo=timezone.utc)
+        self._make(tmp_path, "old", int(cutoff.timestamp()) - 60)
+        self._make(tmp_path, "new", int(cutoff.timestamp()) + 60)
+        failed = [str(tmp_path / "old.eml"), str(tmp_path / "new.eml")]
+        save_state(str(tmp_path), 1, 0, 2, failed, "Proton-Import", routing_mode="single")
+
+        files, _routing, _mode = _prepare_retry_files(
+            str(tmp_path), direct=False, base_mailbox="Proton-Import", since=cutoff
+        )
+        assert files == [str(tmp_path / "new.eml")]
