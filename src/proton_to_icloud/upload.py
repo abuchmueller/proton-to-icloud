@@ -116,8 +116,15 @@ def save_state(
     failed_files: list[str],
     mailbox: str,
     routing_mode: str = "single",
+    since: str | None = None,
 ) -> None:
-    """Write current progress to a JSON state file."""
+    """Write current progress to a JSON state file.
+
+    *since* is the ISO 8601 ``--since`` cutoff of this run (or *None*).  It is
+    stored so a resume with a different cutoff can be refused: the saved index
+    counts through the *filtered* file list, so a different filter would make
+    it point at a different file.
+    """
     data = {
         "last_completed_index": index,
         "uploaded": uploaded,
@@ -125,6 +132,7 @@ def save_state(
         "failed_files": failed_files,
         "mailbox": mailbox,
         "routing_mode": routing_mode,
+        "since": since,
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         "resume_command_hint": f"--resume-from {index + 1}",
     }
@@ -178,6 +186,22 @@ def _apply_since_filter(
     return kept
 
 
+def _check_since_matches(state: dict, since: str | None, source_dir: str) -> None:
+    """Exit if the saved ``--since`` cutoff differs from the current one."""
+    saved = state.get("since")
+    if saved == since:
+        return
+    print(
+        f"Error: Previous run used --since {saved or '(none)'}, "
+        f"but this run uses --since {since or '(none)'}.\n"
+        "The saved resume position counts through the filtered file list, so the "
+        "cutoff must match. Re-run with the same --since, or delete "
+        f"{_state_file_path(source_dir)} to start fresh.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
 def _prepare_retry_files(
     source_dir: str, *, direct: bool, base_mailbox: str, since: datetime | None = None
 ) -> tuple[list[str], dict[str, list[str]], str]:
@@ -214,6 +238,7 @@ def _prepare_retry_files(
             file=sys.stderr,
         )
         sys.exit(1)
+    _check_since_matches(state, since.isoformat() if since else None, source_dir)
 
     # Filter out files that no longer exist on disk
     existing: list[str] = []
@@ -394,6 +419,7 @@ def upload_eml_files(
     routing_mode: str = "single",
     reconnect=None,
     existing_ids: set[str] | None = None,
+    since: str | None = None,
 ) -> tuple[int, int, int, int, list[str]]:
     """Upload .eml file paths to the IMAP mailbox via APPEND.
 
@@ -486,7 +512,9 @@ def upload_eml_files(
 
         # Save state periodically for resume
         if processed % BATCH_LOG_INTERVAL == 0:
-            save_state(source_dir, i, uploaded, failed, failed_files, mailbox_name, routing_mode)
+            save_state(
+                source_dir, i, uploaded, failed, failed_files, mailbox_name, routing_mode, since
+            )
             time.sleep(SLEEP_PER_BATCH)
         else:
             time.sleep(SLEEP_PER_MESSAGE)
@@ -495,7 +523,9 @@ def upload_eml_files(
     print_progress(processed, remaining, uploaded, failed, start_time, skipped_existing)
     sys.stdout.write("\n")
 
-    save_state(source_dir, total - 1, uploaded, failed, failed_files, mailbox_name, routing_mode)
+    save_state(
+        source_dir, total - 1, uploaded, failed, failed_files, mailbox_name, routing_mode, since
+    )
 
     return uploaded, skipped, skipped_existing, failed, failed_files
 
@@ -504,7 +534,11 @@ def upload_eml_files(
 
 
 def _prompt_auto_resume(
-    source: str, total: int, resume_from: int, routing_mode: str = "single"
+    source: str,
+    total: int,
+    resume_from: int,
+    routing_mode: str = "single",
+    since: str | None = None,
 ) -> int:
     """Check for a saved state file and prompt the user to resume."""
     if resume_from != 0:
@@ -529,6 +563,7 @@ def _prompt_auto_resume(
         print(f"  Delete {_state_file_path(source)} and restart to avoid mixed routing.")
         print()
         sys.exit(1)
+    _check_since_matches(prev_state, since, source)
 
     print()
     print(
@@ -657,6 +692,7 @@ def _run_upload_loop(
     routing_mode: str = "single",
     reconnect=None,
     existing_ids: set[str] | None = None,
+    since: str | None = None,
 ) -> tuple[int, int, int, int, list[str], float]:
     """Execute the upload loop, handling Ctrl-C gracefully.
 
@@ -678,6 +714,7 @@ def _run_upload_loop(
             routing_mode=routing_mode,
             reconnect=reconnect,
             existing_ids=existing_ids,
+            since=since,
         )
     except KeyboardInterrupt:
         elapsed = time.time() - start_time
@@ -779,7 +816,13 @@ def _load_upload_plan(
     routing = build_routing_plan(eml_files, source, direct=direct, base_mailbox=args.mailbox)
     print_routing_summary(routing)
     routing_mode = "direct" if direct else ("routed" if len(routing) > 1 else "single")
-    resume_from = _prompt_auto_resume(source, total, args.resume_from, routing_mode=routing_mode)
+    resume_from = _prompt_auto_resume(
+        source,
+        total,
+        args.resume_from,
+        routing_mode=routing_mode,
+        since=args.since.isoformat() if args.since else None,
+    )
     if resume_from > 0:
         print(f"Skipping first {resume_from} files.")
     return eml_files, routing, routing_mode, total, resume_from
@@ -858,6 +901,7 @@ def run_upload(args: Namespace) -> None:
         routing_mode,
         reconnect,
         existing_ids=existing_ids,
+        since=args.since.isoformat() if args.since else None,
     )
 
     try:

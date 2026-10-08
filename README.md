@@ -201,6 +201,11 @@ file and offer to resume.
 
 You can also manually resume with `--resume-from N` to skip the first N files.
 
+The state file also records the `--since` cutoff of the interrupted run. Because
+the saved position counts through the *filtered* file list, resuming or
+`--retry-failed` with a different `--since` is refused — re-run with the same
+value, or delete the state file to start fresh.
+
 ## Performance
 
 In testing, throughput is approximately **1–2 seconds per message** depending on
