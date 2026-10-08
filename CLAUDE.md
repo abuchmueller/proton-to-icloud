@@ -22,6 +22,8 @@ Zero-dependency Python CLI tool that uploads Proton Mail .eml exports to iCloud 
 - `src/proton_to_icloud/cli.py` — argparse CLI with `upload` and `batch` subcommands
 - `src/proton_to_icloud/upload.py` — IMAP APPEND upload logic with resume/state
 - `src/proton_to_icloud/metadata.py` — Proton metadata parsing and folder routing logic
+- `src/proton_to_icloud/msgid.py` — Message-ID scan of iCloud for `--skip-existing`
+- `src/proton_to_icloud/imap_names.py` — mailbox names: modified UTF-7 + IMAP quoting
 - `src/proton_to_icloud/batch.py` — Split .eml files into numbered batch folders
 - `src/proton_to_icloud/progress.py` — Terminal progress bar utilities
 
@@ -39,7 +41,9 @@ Zero-dependency Python CLI tool that uploads Proton Mail .eml exports to iCloud 
   `select`, `create`, etc.).  Python's `imaplib` does **not** quote arguments,
   so names with spaces (e.g. `Sent Messages`, `Deleted Messages`) are sent
   unquoted on the wire, causing `BAD Parse Error` on the server.  Use the
-  `_quote_mailbox()` helper in `upload.py`.
+  `_quote_mailbox()` helper in `upload.py` (also encodes non-ASCII names to
+  modified UTF-7 — imaplib sends arguments as ASCII). Names returned by LIST are
+  already encoded: pass them through `quote_wire_name()`, never re-encode.
 - **System folders need `\Seen`** — iCloud rejects unseen messages appended to
   Sent Messages, Drafts, Deleted Messages, and Junk.  Use `_flags_for_mailbox()`.
 - **Sanitise headers** — Proton exports of Gmail imports may contain non-ASCII

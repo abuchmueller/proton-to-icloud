@@ -10,6 +10,7 @@ import time
 from argparse import Namespace
 from datetime import datetime
 
+from proton_to_icloud.imap_names import mailbox_arg
 from proton_to_icloud.metadata import (
     build_routing_plan,
     filter_since,
@@ -84,16 +85,16 @@ def parse_date_from_eml(raw_bytes: bytes) -> str | None:
 
 def ensure_mailbox_exists(conn: imaplib.IMAP4_SSL, mailbox_name: str) -> bool:
     """Create the IMAP mailbox if it doesn't already exist."""
-    status, _ = conn.select(mailbox_name)
+    status, _ = conn.select(_quote_mailbox(mailbox_name))
     if status == "OK":
         conn.close()
         return True
 
     print(f"  Mailbox '{mailbox_name}' not found. Creating it...")
-    status, response = conn.create(mailbox_name)
+    status, response = conn.create(_quote_mailbox(mailbox_name))
     if status == "OK":
         print(f"  Created mailbox: {mailbox_name}")
-        conn.subscribe(mailbox_name)
+        conn.subscribe(_quote_mailbox(mailbox_name))
         return True
 
     print(f"  ERROR: Could not create mailbox '{mailbox_name}': {response}")
@@ -338,15 +339,13 @@ def _is_unavailable(response: list) -> bool:
 
 
 def _quote_mailbox(name: str) -> str:
-    """Quote an IMAP mailbox name if it contains spaces.
+    """Return *name* as an IMAP command argument (modified UTF-7, quoted if needed).
 
-    Python's ``imaplib`` does **not** quote mailbox arguments.  Names with
-    spaces (e.g. ``Sent Messages``) are sent verbatim, which causes the
-    server to misparse the APPEND command → ``BAD Parse Error``.
+    Python's ``imaplib`` neither quotes nor encodes mailbox arguments.  Names
+    with spaces (e.g. ``Sent Messages``) would be misparsed (``BAD Parse
+    Error``) and non-ASCII names (``Büro``) raise ``UnicodeEncodeError``.
     """
-    if " " in name:
-        return f'"{name}"'
-    return name
+    return mailbox_arg(name)
 
 
 def _is_duplicate(msgid: str | None, existing_ids: set[str] | None) -> bool:
@@ -804,7 +803,7 @@ def run_upload(args: Namespace) -> None:
         print(f"Error: Source directory does not exist: {source}", file=sys.stderr)
         sys.exit(1)
 
-    skip_existing = bool(getattr(args, "skip_existing", False))
+    skip_existing = args.skip_existing
 
     print(f"Source directory: {source}")
     print(f"Target mailbox:  {args.mailbox}")

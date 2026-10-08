@@ -377,6 +377,7 @@ class TestRunUploadSince:
             direct=False,
             no_create_mailbox=False,
             since=since,
+            skip_existing=False,
         )
 
     def test_dry_run_only_counts_newer_emails(self, tmp_path, capsys):

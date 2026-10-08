@@ -8,13 +8,14 @@ has a deleted or spam copy.
 
 from __future__ import annotations
 
-import base64
 import email.parser
 import email.policy
 import imaplib
-import re
 import sys
 import time
+from typing import NamedTuple
+
+from proton_to_icloud.imap_names import decode_imap_utf7, quote_wire_name
 
 # iCloud folders that should not block an import.
 DEFAULT_SKIP_FOLDERS: frozenset[str] = frozenset(
@@ -25,10 +26,11 @@ DEFAULT_SKIP_FOLDERS: frozenset[str] = frozenset(
     }
 )
 
+# SPECIAL-USE flags (RFC 6154) of folders that should not block an import.
+SKIP_SPECIAL_USE: frozenset[str] = frozenset({"\\Trash", "\\Junk"})
+
 FETCH_BATCH = 200
 _FETCH_SLEEP = 0.05
-
-_IMAP_UTF7_RE = re.compile(r"&([^-]*)-")
 
 
 def normalize_message_id(value: str | None) -> str | None:
@@ -55,25 +57,16 @@ def extract_message_id_from_eml(raw: bytes) -> str | None:
     return normalize_message_id(msg.get("Message-ID"))
 
 
-def decode_imap_utf7(name: str) -> str:
-    """Decode an IMAP modified UTF-7 mailbox name."""
+class Mailbox(NamedTuple):
+    """One IMAP LIST entry: *wire* is what the server expects back, *display* is for humans."""
 
-    def _repl(match: re.Match[str]) -> str:
-        token = match.group(1)
-        if token == "":
-            return "&"
-        b64 = token.replace(",", "/")
-        pad = (-len(b64)) % 4
-        try:
-            return base64.b64decode(b64 + "=" * pad).decode("utf-16-be")
-        except Exception:
-            return match.group(0)
-
-    return _IMAP_UTF7_RE.sub(_repl, name)
+    flags: frozenset[str]
+    wire: str
+    display: str
 
 
-def parse_imap_list_line(line: str) -> tuple[frozenset[str], str] | None:
-    """Parse one IMAP LIST line into ``(flags, mailbox_name)``."""
+def parse_imap_list_line(line: str) -> Mailbox | None:
+    """Parse one IMAP LIST line into a :class:`Mailbox`."""
     line = line.strip()
     if not line.startswith("("):
         return None
@@ -106,11 +99,10 @@ def parse_imap_list_line(line: str) -> tuple[frozenset[str], str] | None:
         mailbox = parts[-1] if parts else ""
 
     if len(mailbox) >= 2 and mailbox.startswith('"') and mailbox.endswith('"'):
-        mailbox = mailbox[1:-1]
-    mailbox = decode_imap_utf7(mailbox)
+        mailbox = mailbox[1:-1].replace('\\"', '"').replace("\\\\", "\\")
     if not mailbox:
         return None
-    return flags, mailbox
+    return Mailbox(flags, mailbox, decode_imap_utf7(mailbox))
 
 
 def parse_message_ids_from_fetch(fetched: list | None) -> set[str]:
@@ -166,16 +158,10 @@ def classify_eml_files(
     return would_upload, would_skip, missing
 
 
-def _quote_mailbox(name: str) -> str:
-    if " " in name:
-        return f'"{name}"'
-    return name
-
-
-def list_selectable_mailboxes(conn: imaplib.IMAP4_SSL) -> list[str]:
-    """Return selectable IMAP mailbox names, skipping \\Noselect."""
+def list_selectable_mailboxes(conn: imaplib.IMAP4_SSL) -> list[Mailbox]:
+    """Return selectable IMAP mailboxes, skipping \\Noselect."""
     status, data = conn.list()
-    names: list[str] = []
+    names: list[Mailbox] = []
     if status != "OK" or data is None:
         return names
     for item in data:
@@ -185,16 +171,18 @@ def list_selectable_mailboxes(conn: imaplib.IMAP4_SSL) -> list[str]:
         parsed = parse_imap_list_line(line)
         if parsed is None:
             continue
-        flags, name = parsed
-        if "\\Noselect" in flags or "\\NonExistent" in flags:
+        if "\\Noselect" in parsed.flags or "\\NonExistent" in parsed.flags:
             continue
-        names.append(name)
+        names.append(parsed)
     return names
 
 
-def fetch_message_ids_from_mailbox(conn: imaplib.IMAP4_SSL, mailbox: str) -> set[str]:
-    """FETCH Message-ID headers for every message in *mailbox* (read-only)."""
-    status, _ = conn.select(_quote_mailbox(mailbox), readonly=True)
+def fetch_message_ids_from_mailbox(conn: imaplib.IMAP4_SSL, wire_name: str) -> set[str]:
+    """FETCH Message-ID headers for every message in a mailbox (read-only).
+
+    *wire_name* is the name exactly as returned by LIST (modified UTF-7).
+    """
+    status, _ = conn.select(quote_wire_name(wire_name), readonly=True)
     if status != "OK":
         return set()
 
@@ -234,13 +222,13 @@ def collect_existing_message_ids(
 
     all_ids: set[str] = set()
     for mailbox in mailboxes:
-        if mailbox.casefold() in skip:
-            print(f"  Ignoring '{mailbox}' (not used for duplicate matching).")
+        if mailbox.flags & SKIP_SPECIAL_USE or mailbox.display.casefold() in skip:
+            print(f"  Ignoring '{mailbox.display}' (not used for duplicate matching).")
             continue
-        sys.stdout.write(f"  Scanning '{mailbox}' ...")
+        sys.stdout.write(f"  Scanning '{mailbox.display}' ...")
         sys.stdout.flush()
         try:
-            ids = fetch_message_ids_from_mailbox(conn, mailbox)
+            ids = fetch_message_ids_from_mailbox(conn, mailbox.wire)
         except (imaplib.IMAP4.error, imaplib.IMAP4.abort, OSError) as e:
             print(f" failed ({e})")
             continue

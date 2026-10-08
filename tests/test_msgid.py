@@ -2,7 +2,7 @@
 
 from proton_to_icloud.msgid import (
     classify_eml_files,
-    decode_imap_utf7,
+    collect_existing_message_ids,
     extract_message_id_from_eml,
     normalize_message_id,
     parse_imap_list_line,
@@ -49,37 +49,30 @@ class TestExtractMessageIdFromEml:
         assert extract_message_id_from_eml(raw) == "imap@host"
 
 
-class TestDecodeImapUtf7:
-    def test_ascii_unchanged(self):
-        assert decode_imap_utf7("INBOX") == "INBOX"
-
-    def test_literal_ampersand(self):
-        assert decode_imap_utf7("A&-B") == "A&B"
-
-    def test_non_ascii(self):
-        # ö is U+00F6 → modified UTF-7 &APY-
-        assert decode_imap_utf7("&APY-") == "ö"
-
-
 class TestParseImapListLine:
     def test_inbox_unquoted(self):
-        flags, name = parse_imap_list_line('(\\HasNoChildren) "/" INBOX')
-        assert name == "INBOX"
-        assert "\\HasNoChildren" in flags
+        mb = parse_imap_list_line('(\\HasNoChildren) "/" INBOX')
+        assert mb.wire == mb.display == "INBOX"
+        assert "\\HasNoChildren" in mb.flags
 
     def test_quoted_with_space(self):
-        flags, name = parse_imap_list_line('(\\HasNoChildren \\Sent) "/" "Sent Messages"')
-        assert name == "Sent Messages"
-        assert "\\Sent" in flags
+        mb = parse_imap_list_line('(\\HasNoChildren \\Sent) "/" "Sent Messages"')
+        assert mb.wire == "Sent Messages"
+        assert "\\Sent" in mb.flags
 
     def test_nested_folder(self):
-        _flags, name = parse_imap_list_line('(\\HasNoChildren) "/" "Proton-Import/Inbox"')
-        assert name == "Proton-Import/Inbox"
+        mb = parse_imap_list_line('(\\HasNoChildren) "/" "Proton-Import/Inbox"')
+        assert mb.wire == "Proton-Import/Inbox"
 
     def test_noselect(self):
-        flags, name = parse_imap_list_line('(\\Noselect \\HasChildren) "/" "[Mail]"')
-        assert name == "[Mail]"
-        assert "\\Noselect" in flags
+        mb = parse_imap_list_line('(\\Noselect \\HasChildren) "/" "[Mail]"')
+        assert mb.wire == "[Mail]"
+        assert "\\Noselect" in mb.flags
+
+    def test_non_ascii_keeps_wire_name_for_select(self):
+        mb = parse_imap_list_line('(\\HasNoChildren) "/" "B&APw-ro"')
+        assert mb.wire == "B&APw-ro"
+        assert mb.display == "Büro"
 
     def test_garbage(self):
         assert parse_imap_list_line("not a list line") is None
@@ -130,3 +123,37 @@ class TestClassifyEmlFiles:
         self._write(a, "only@host")
         upload, skip, missing = classify_eml_files([str(a)], existing_ids=set())
         assert (upload, skip, missing) == (1, 0, 0)
+
+
+class _FakeConn:
+    """Mimics imaplib: arguments are sent as ASCII."""
+
+    def __init__(self, lines):
+        self.lines = lines
+        self.selected = []
+
+    def list(self):
+        return "OK", self.lines
+
+    def select(self, name, readonly=False):
+        name.encode("ascii")
+        self.selected.append(name)
+        return "OK", [b"0"]
+
+    def uid(self, *args):
+        return "OK", [b""]
+
+
+class TestCollectExistingMessageIds:
+    def test_non_ascii_and_special_use_folders(self, capsys):
+        conn = _FakeConn(
+            [
+                b'(\\HasNoChildren) "/" INBOX',
+                b'(\\HasNoChildren) "/" "B&APw-ro"',
+                b'(\\HasNoChildren \\Trash) "/" "Papierkorb"',
+                b'(\\Noselect) "/" "[Mail]"',
+            ]
+        )
+        assert collect_existing_message_ids(conn) == set()
+        assert conn.selected == ["INBOX", "B&APw-ro"]
+        assert "Ignoring 'Papierkorb'" in capsys.readouterr().out
