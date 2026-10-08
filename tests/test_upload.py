@@ -11,6 +11,7 @@ from proton_to_icloud.upload import (
     _flags_for_mailbox,
     _is_unavailable,
     _prepare_retry_files,
+    _prompt_auto_resume,
     _quote_mailbox,
     _strip_non_ascii_headers,
     collect_eml_files,
@@ -112,6 +113,57 @@ class TestSaveStateRoutingMode:
         state = load_state(str(tmp_path))
         assert state is not None
         assert state["routing_mode"] == "routed"
+
+
+class TestSinceInState:
+    """The --since cutoff is saved and a resume with a different cutoff is refused."""
+
+    SINCE = "2026-09-01T00:00:00+00:00"
+
+    def _state(self, tmp_path, since):
+        eml = tmp_path / "a.eml"
+        eml.write_text("fake")
+        save_state(str(tmp_path), 0, 0, 1, [str(eml)], "INBOX", routing_mode="single", since=since)
+
+    def test_since_round_trips(self, tmp_path):
+        self._state(tmp_path, self.SINCE)
+        assert load_state(str(tmp_path))["since"] == self.SINCE
+
+    def test_retry_with_same_since_ok(self, tmp_path):
+        self._state(tmp_path, self.SINCE)
+        files, _, _ = _prepare_retry_files(
+            str(tmp_path),
+            direct=False,
+            base_mailbox="INBOX",
+            since=datetime.fromisoformat(self.SINCE),
+        )
+        assert len(files) == 1
+
+    def test_retry_with_different_since_exits(self, tmp_path, capsys):
+        self._state(tmp_path, self.SINCE)
+        with pytest.raises(SystemExit, match="1"):
+            _prepare_retry_files(
+                str(tmp_path),
+                direct=False,
+                base_mailbox="INBOX",
+                since=datetime.fromisoformat("2026-08-01T00:00:00+00:00"),
+            )
+        assert "--since" in capsys.readouterr().err
+
+    def test_retry_without_since_after_run_with_since_exits(self, tmp_path):
+        self._state(tmp_path, self.SINCE)
+        with pytest.raises(SystemExit, match="1"):
+            _prepare_retry_files(str(tmp_path), direct=False, base_mailbox="INBOX")
+
+    def test_auto_resume_with_different_since_exits(self, tmp_path):
+        self._state(tmp_path, self.SINCE)
+        with pytest.raises(SystemExit, match="1"):
+            _prompt_auto_resume(str(tmp_path), 5, 0, routing_mode="single", since=None)
+
+    def test_old_state_without_since_key_resumes_when_no_since(self, tmp_path):
+        self._state(tmp_path, None)
+        files, _, _ = _prepare_retry_files(str(tmp_path), direct=False, base_mailbox="INBOX")
+        assert len(files) == 1
 
 
 class TestSanitizeEmlHeaders:
@@ -408,7 +460,16 @@ class TestRunUploadSince:
         self._make(tmp_path, "old", int(cutoff.timestamp()) - 60)
         self._make(tmp_path, "new", int(cutoff.timestamp()) + 60)
         failed = [str(tmp_path / "old.eml"), str(tmp_path / "new.eml")]
-        save_state(str(tmp_path), 1, 0, 2, failed, "Proton-Import", routing_mode="single")
+        save_state(
+            str(tmp_path),
+            1,
+            0,
+            2,
+            failed,
+            "Proton-Import",
+            routing_mode="single",
+            since=cutoff.isoformat(),
+        )
 
         files, _routing, _mode = _prepare_retry_files(
             str(tmp_path), direct=False, base_mailbox="Proton-Import", since=cutoff
