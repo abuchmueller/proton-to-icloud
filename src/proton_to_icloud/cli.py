@@ -46,6 +46,7 @@ Examples:
   proton-to-icloud upload -s "you@pm.me/mail_20260223_210229" -e you@icloud.com --dry-run
   proton-to-icloud upload -s "you@pm.me/mail_20260223_210229" -e you@icloud.com \\
       --since 2026-09-01T00:00
+  proton-to-icloud upload -s "you@pm.me/mail_20260223_210229" -e you@icloud.com --skip-existing
         """,
     )
     upload_p.add_argument(
@@ -78,7 +79,8 @@ Examples:
     upload_p.add_argument(
         "--dry-run",
         action="store_true",
-        help="Scan and count files without connecting or uploading.",
+        help="Scan and count files without uploading. With --skip-existing, "
+        "connects to iCloud to compare Message-IDs, then stops.",
     )
     upload_p.add_argument(
         "--since",
@@ -113,6 +115,14 @@ Examples:
         "--no-create-mailbox",
         action="store_true",
         help="Do not auto-create the target mailbox if it is missing.",
+    )
+    upload_p.add_argument(
+        "--skip-existing",
+        action="store_true",
+        help="Skip emails whose Message-ID already exists in iCloud "
+        "(Inbox, Sent, Archive, custom folders, and Proton-Import). "
+        "Trash, Junk, and Notes are ignored. Emails without a Message-ID "
+        "are still uploaded.",
     )
 
     # ── batch ─────────────────────────────────────────────────────────

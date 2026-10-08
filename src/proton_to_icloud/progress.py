@@ -24,6 +24,7 @@ def print_progress(
     uploaded: int,
     failed: int,
     start_time: float,
+    skipped_existing: int = 0,
 ) -> None:
     """Print a single-line progress bar with ETA and diagnostics."""
     elapsed = time.time() - start_time
@@ -42,10 +43,11 @@ def print_progress(
     filled = int(bar_width * current / total) if total else 0
     bar = "█" * filled + "░" * (bar_width - filled)
 
+    skip_bit = f" skip:{skipped_existing}  " if skipped_existing else "  "
     line = (
         f"\r  {bar} {pct:5.1f}%  "
         f"{current}/{total}  "
-        f"ok:{uploaded} fail:{failed}  "
+        f"ok:{uploaded} fail:{failed}{skip_bit}"
         f"elapsed:{format_duration(elapsed)} eta:{eta_str}"
     )
 
