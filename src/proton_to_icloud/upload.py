@@ -8,8 +8,9 @@ import os
 import sys
 import time
 from argparse import Namespace
+from datetime import datetime
 
-from proton_to_icloud.metadata import build_routing_plan, print_routing_summary
+from proton_to_icloud.metadata import build_routing_plan, filter_since, print_routing_summary
 from proton_to_icloud.progress import format_duration, print_progress
 
 # ── iCloud IMAP settings ─────────────────────────────────────────────────────
@@ -144,8 +145,31 @@ def clear_state(source_dir: str) -> None:
         pass
 
 
+def _apply_since_filter(
+    eml_files: list[str], since: datetime | None, *, empty_message: str
+) -> list[str]:
+    """Drop emails received before *since* and report what was filtered.
+
+    Exits with *empty_message* when nothing is left to upload.
+    """
+    if since is None:
+        return eml_files
+    print(f"Filtering to emails received since {since.isoformat(sep=' ')}...")
+    kept, excluded, undated = filter_since(eml_files, since)
+    print(f"  {len(kept):,} kept, {excluded:,} skipped as older than --since.")
+    if undated:
+        print(
+            f"  WARNING: {len(undated):,} files have no readable receive time "
+            "(no metadata Time or Date header) and were kept."
+        )
+    if not kept:
+        print(empty_message)
+        sys.exit(0)
+    return kept
+
+
 def _prepare_retry_files(
-    source_dir: str, *, direct: bool, base_mailbox: str
+    source_dir: str, *, direct: bool, base_mailbox: str, since: datetime | None = None
 ) -> tuple[list[str], dict[str, list[str]], str]:
     """Load failed files from the state file and prepare them for re-upload.
 
@@ -192,6 +216,12 @@ def _prepare_retry_files(
     if not existing:
         print("All previously failed files have been removed from disk — nothing to retry.")
         sys.exit(0)
+
+    existing = _apply_since_filter(
+        existing,
+        since,
+        empty_message="No previously failed files fall within --since — nothing to retry.",
+    )
 
     routing_mode = "direct" if direct else "single"
     routing = build_routing_plan(existing, source_dir, direct=direct, base_mailbox=base_mailbox)
@@ -641,6 +671,7 @@ def run_upload(args: Namespace) -> None:
     source = args.source
     direct = args.direct
     retry_failed = args.retry_failed
+    since = getattr(args, "since", None)
 
     if retry_failed and args.resume_from != 0:
         print(
@@ -662,7 +693,7 @@ def run_upload(args: Namespace) -> None:
     if retry_failed:
         # ── Retry path ────────────────────────────────────────────────
         eml_files, routing, routing_mode = _prepare_retry_files(
-            source, direct=direct, base_mailbox=args.mailbox
+            source, direct=direct, base_mailbox=args.mailbox, since=since
         )
         total = len(eml_files)
         resume_from = 0
@@ -678,6 +709,13 @@ def run_upload(args: Namespace) -> None:
             sys.exit(1)
 
         print(f"Found {total:,} .eml files.")
+
+        eml_files = _apply_since_filter(
+            eml_files,
+            since,
+            empty_message="No emails received since the --since cutoff — nothing to upload.",
+        )
+        total = len(eml_files)
 
         # ── Build routing plan ────────────────────────────────────────
         print(f"Reading metadata for {total:,} emails...")

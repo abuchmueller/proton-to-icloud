@@ -4,8 +4,25 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import datetime
 
 from proton_to_icloud import __version__
+
+
+def parse_since(value: str) -> datetime:
+    """Parse an ISO 8601 date/time into a timezone-aware ``datetime``.
+
+    Naive values (no UTC offset) are interpreted in the local time zone.
+    """
+    try:
+        parsed = datetime.fromisoformat(value.strip())
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"invalid date/time {value!r} — use ISO 8601, e.g. 2026-09-01 or 2026-09-01T14:30"
+        ) from None
+    if parsed.tzinfo is None:
+        parsed = parsed.astimezone()
+    return parsed
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -27,6 +44,8 @@ def _build_parser() -> argparse.ArgumentParser:
 Examples:
   proton-to-icloud upload -s "you@pm.me/mail_20260223_210229" -e you@icloud.com
   proton-to-icloud upload -s "you@pm.me/mail_20260223_210229" -e you@icloud.com --dry-run
+  proton-to-icloud upload -s "you@pm.me/mail_20260223_210229" -e you@icloud.com \\
+      --since 2026-09-01T00:00
         """,
     )
     upload_p.add_argument(
@@ -60,6 +79,16 @@ Examples:
         "--dry-run",
         action="store_true",
         help="Scan and count files without connecting or uploading.",
+    )
+    upload_p.add_argument(
+        "--since",
+        type=parse_since,
+        default=None,
+        metavar="DATETIME",
+        help="Only upload emails received at or after this ISO 8601 date/time "
+        "(e.g. 2026-09-01, 2026-09-01T14:30, 2026-09-01T14:30+01:00). "
+        "Times without an offset are taken as local time. The receive time is "
+        "read from Proton's .metadata.json, falling back to the .eml Date header.",
     )
     upload_p.add_argument(
         "--resume-from",

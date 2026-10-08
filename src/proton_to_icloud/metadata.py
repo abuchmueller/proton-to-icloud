@@ -6,8 +6,11 @@ Mail export and resolves each email to the correct IMAP target folder.
 
 from __future__ import annotations
 
+import email.utils
 import json
 import os
+from datetime import datetime
+from email.parser import BytesHeaderParser
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
@@ -58,8 +61,8 @@ def load_labels(source_dir: str) -> dict[str, str] | None:
 # ── Per-message metadata ─────────────────────────────────────────────────────
 
 
-def read_label_ids(eml_path: str) -> list[str] | None:
-    """Return ``LabelIDs`` from the sibling ``.metadata.json`` for *eml_path*.
+def _find_metadata_path(eml_path: str) -> str | None:
+    """Return the ``.metadata.json`` path belonging to *eml_path*, or *None*.
 
     Handles both flat exports (``foo.eml`` → ``foo.metadata.json``) and
     split exports (``eml/foo.eml`` → ``../json/foo.metadata.json``).
@@ -69,7 +72,7 @@ def read_label_ids(eml_path: str) -> list[str] | None:
     # Flat layout: sibling file
     sibling = base + ".metadata.json"
     if os.path.isfile(sibling):
-        return _parse_label_ids(sibling)
+        return sibling
 
     # Split layout: eml/ and json/ directories
     directory = os.path.dirname(eml_path)
@@ -77,9 +80,17 @@ def read_label_ids(eml_path: str) -> list[str] | None:
     filename = os.path.basename(base) + ".metadata.json"
     json_path = os.path.join(parent, "json", filename)
     if os.path.isfile(json_path):
-        return _parse_label_ids(json_path)
+        return json_path
 
     return None
+
+
+def read_label_ids(eml_path: str) -> list[str] | None:
+    """Return ``LabelIDs`` from the ``.metadata.json`` belonging to *eml_path*."""
+    metadata_path = _find_metadata_path(eml_path)
+    if metadata_path is None:
+        return None
+    return _parse_label_ids(metadata_path)
 
 
 def _parse_label_ids(metadata_path: str) -> list[str] | None:
@@ -90,6 +101,73 @@ def _parse_label_ids(metadata_path: str) -> list[str] | None:
         return data["Payload"]["LabelIDs"]
     except (OSError, json.JSONDecodeError, KeyError, TypeError):
         return None
+
+
+# ── Received time / date filtering ───────────────────────────────────────────
+
+# Enough to cover the header block of any sane email without reading attachments.
+_HEADER_READ_LIMIT = 256 * 1024
+
+
+def read_received_time(eml_path: str) -> float | None:
+    """Return when the email at *eml_path* was received, as a Unix timestamp.
+
+    Prefers Proton's ``Payload.Time`` from the ``.metadata.json`` file (the
+    server receive time) and falls back to the ``Date:`` header of the
+    ``.eml`` itself.  File-system timestamps are never used — they reflect
+    when the export ran, not when the email arrived.
+    """
+    metadata_path = _find_metadata_path(eml_path)
+    if metadata_path is not None:
+        try:
+            with open(metadata_path) as f:
+                value = json.load(f)["Payload"]["Time"]
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+                return float(value)
+        except (OSError, json.JSONDecodeError, KeyError, TypeError):
+            pass
+
+    return _read_date_header(eml_path)
+
+
+def _read_date_header(eml_path: str) -> float | None:
+    """Parse the ``Date:`` header of *eml_path* into a Unix timestamp."""
+    try:
+        with open(eml_path, "rb") as f:
+            head = f.read(_HEADER_READ_LIMIT)
+        date_value = BytesHeaderParser().parsebytes(head).get("Date")
+        if not date_value:
+            return None
+        parsed = email.utils.parsedate_tz(str(date_value))
+        if parsed is None:
+            return None
+        return float(email.utils.mktime_tz(parsed))
+    except Exception:
+        return None
+
+
+def filter_since(eml_files: list[str], since: datetime) -> tuple[list[str], int, list[str]]:
+    """Keep only emails received at or after *since*.
+
+    *since* must be timezone-aware.  Returns ``(kept, excluded_count,
+    undated)`` where *undated* lists files whose receive time could not be
+    determined — these are **kept** (and also included in *kept*) so that no
+    potentially-new email is silently dropped.
+    """
+    cutoff = since.timestamp()
+    kept: list[str] = []
+    undated: list[str] = []
+    excluded = 0
+    for path in eml_files:
+        received = read_received_time(path)
+        if received is None:
+            undated.append(path)
+            kept.append(path)
+        elif received >= cutoff:
+            kept.append(path)
+        else:
+            excluded += 1
+    return kept, excluded, undated
 
 
 # ── Folder resolution ────────────────────────────────────────────────────────
