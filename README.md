@@ -167,6 +167,8 @@ proton-to-icloud upload \
 | Spam | `X/Spam` | `Junk` |
 | Trash | `X/Trash` | `Deleted Messages` |
 | Archive | `X/Archive` | `Archive` |
+| Custom folder (incl. nested `A/B`) | `X/<path>` | `<path>` (top-level iCloud folder) |
+| Custom label (tag) | ignored for routing | ignored for routing |
 | Unknown / no metadata | `X` (fallback) | `X` (fallback) |
 
 If no `labels.json` is found, all emails go to `--mailbox` (backward-compatible).

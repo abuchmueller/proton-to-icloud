@@ -20,6 +20,10 @@ SKIP_LABEL_IDS: frozenset[str] = frozenset({"1", "2", "5", "9", "10", "12", "15"
 # Highest-priority first: Inbox > Sent > Drafts > Spam > Trash > Archive.
 LABEL_PRIORITY: list[str] = ["0", "7", "8", "4", "3", "6"]
 
+# labels.json ``Type`` values (Proton API): 1 = label (tag), 3 = folder.
+LABEL_TYPE_TAG = 1
+LABEL_TYPE_FOLDER = 3
+
 # Proton folder name → iCloud native IMAP name (used with --direct).
 ICLOUD_FOLDER_MAP: dict[str, str] = {
     "Inbox": "INBOX",
@@ -38,6 +42,11 @@ def load_labels(source_dir: str) -> dict[str, str] | None:
     """Find and parse ``labels.json``, returning ``{id: name}`` or *None*.
 
     Searches *source_dir*, then ``source_dir/json/``, then the parent directory.
+
+    Only entries that can be routing targets are returned: system labels and
+    custom *folders*.  Custom *labels* (Proton tags, ``Type`` 1) are dropped —
+    a message can carry many tags but sits in exactly one folder.  Folders use
+    their full ``Path`` so nested folders (``Work/2024``) stay distinct.
     """
     candidates = [
         os.path.join(source_dir, "labels.json"),
@@ -50,12 +59,22 @@ def load_labels(source_dir: str) -> dict[str, str] | None:
                 with open(path) as f:
                     data = json.load(f)
                 payload = data.get("Payload", [])
-                return {item["ID"]: item["Name"] for item in payload}
+                return {
+                    item["ID"]: _label_target_name(item)
+                    for item in payload
+                    if item["ID"] in LABEL_PRIORITY or item.get("Type") != LABEL_TYPE_TAG
+                }
             except (OSError, json.JSONDecodeError, KeyError, TypeError):
                 # Intentional: a corrupted file should not silently fall through
                 # to the next candidate path — surface the problem immediately.
                 return None
     return None
+
+
+def _label_target_name(item: dict) -> str:
+    if item.get("Type") == LABEL_TYPE_FOLDER and item.get("Path"):
+        return item["Path"]
+    return item["Name"]
 
 
 # ── Per-message metadata ─────────────────────────────────────────────────────
@@ -184,32 +203,38 @@ def resolve_target_folder(
 
     *direct=True* maps to native iCloud folder names; *direct=False* creates
     subfolders under *base_mailbox*.  Falls back to *base_mailbox* when the
-    label is unknown or missing.
+    label is unknown or missing, in both modes — that pile is easy to find and
+    delete, whereas misrouted mail in INBOX is not.  Custom Proton folders
+    become real folders (top-level in direct mode, subfolders of
+    *base_mailbox* otherwise).  System labels win over custom folders.
     """
+    fallback = base_mailbox
     if not label_ids or not labels_map:
-        return base_mailbox
+        return fallback
 
     # Filter out meta-labels
     real = [lid for lid in label_ids if lid not in SKIP_LABEL_IDS]
     if not real:
-        return base_mailbox
+        return fallback
 
-    # Pick highest-priority label
+    # Pick highest-priority system label, else the custom folder (tags are
+    # not in *labels_map*, see load_labels).
     chosen_id: str | None = None
     for priority_id in LABEL_PRIORITY:
         if priority_id in real:
             chosen_id = priority_id
             break
-
     if chosen_id is None:
-        return base_mailbox
+        chosen_id = next((lid for lid in real if lid in labels_map), None)
+    if chosen_id is None:
+        return fallback
 
     label_name = labels_map.get(chosen_id)
     if not label_name:
-        return base_mailbox
+        return fallback
 
     if direct:
-        return ICLOUD_FOLDER_MAP.get(label_name, base_mailbox)
+        return ICLOUD_FOLDER_MAP.get(label_name, label_name)
 
     return f"{base_mailbox}/{label_name}"
 
