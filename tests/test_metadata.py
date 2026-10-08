@@ -179,11 +179,11 @@ class TestResolveTargetFolder:
         )
         assert result == "Proton-Import"
 
-    def test_unknown_label_direct_goes_to_inbox(self):
+    def test_unknown_label_direct_uses_fallback(self):
         result = resolve_target_folder(
             ["999"], LABELS_MAP, direct=True, base_mailbox="Proton-Import"
         )
-        assert result == "INBOX"
+        assert result == "Proton-Import"
 
     def test_only_meta_labels_fallback(self):
         result = resolve_target_folder(
@@ -191,11 +191,11 @@ class TestResolveTargetFolder:
         )
         assert result == "Proton-Import"
 
-    def test_only_meta_labels_direct_goes_to_inbox(self):
+    def test_only_meta_labels_direct_uses_fallback(self):
         result = resolve_target_folder(
             ["5", "15", "10"], LABELS_MAP, direct=True, base_mailbox="Proton-Import"
         )
-        assert result == "INBOX"
+        assert result == "Proton-Import"
 
     def test_custom_label_direct_is_top_level(self):
         labels = {**LABELS_MAP, "custom1": "Projects"}
@@ -411,3 +411,42 @@ class TestFilterSince:
         assert kept == [undated_file]
         assert excluded == 0
         assert undated == [undated_file]
+
+
+class TestFoldersVersusTags:
+    PAYLOAD = {
+        "Payload": [
+            {"ID": "0", "Name": "Inbox", "Path": "Inbox", "Type": 1},
+            {"ID": "5", "Name": "All Mail", "Path": "All Mail", "Type": 1},
+            {"ID": "f1", "Name": "Projects", "Path": "Projects", "Type": 3},
+            {"ID": "f2", "Name": "2024", "Path": "Work/2024", "Type": 3},
+            {"ID": "t1", "Name": "Important", "Path": "Important", "Type": 1},
+            {"ID": "t2", "Name": "Client-X", "Path": "Client-X", "Type": 1},
+        ]
+    }
+
+    def _labels(self, tmp_path):
+        _write_labels(tmp_path / "labels.json", self.PAYLOAD)
+        return load_labels(str(tmp_path))
+
+    def test_tags_dropped_folders_use_path(self, tmp_path):
+        labels = self._labels(tmp_path)
+        assert labels["f2"] == "Work/2024"
+        assert "t1" not in labels and "t2" not in labels
+        assert labels["0"] == "Inbox"
+
+    def test_folder_wins_regardless_of_label_order(self, tmp_path):
+        labels = self._labels(tmp_path)
+        for ids in (["f1", "t1", "t2", "5"], ["t1", "f1", "t2", "5"], ["t2", "t1", "f1", "5"]):
+            assert resolve_target_folder(ids, labels, direct=True, base_mailbox="X") == "Projects"
+
+    def test_tag_only_mail_falls_back(self, tmp_path):
+        labels = self._labels(tmp_path)
+        assert resolve_target_folder(["t1", "5"], labels, direct=True, base_mailbox="X") == "X"
+
+    def test_nested_folder_prefixed(self, tmp_path):
+        labels = self._labels(tmp_path)
+        assert (
+            resolve_target_folder(["f2", "5"], labels, direct=False, base_mailbox="X")
+            == "X/Work/2024"
+        )
