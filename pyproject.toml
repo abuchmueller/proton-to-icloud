@@ -1,6 +1,6 @@
 [project]
 name = "proton-to-icloud"
-version = "0.2.0"
+version = "0.2.1"
 description = "Migrate Proton Mail exports (.eml) to iCloud Mail via IMAP"
 readme = "README.md"
 license = "MIT"
