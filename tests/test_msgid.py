@@ -1,5 +1,7 @@
 """Tests for proton_to_icloud.msgid — Message-ID matching, no IMAP."""
 
+import pytest
+
 from proton_to_icloud.msgid import (
     classify_eml_files,
     collect_existing_message_ids,
@@ -157,3 +159,41 @@ class TestCollectExistingMessageIds:
         assert collect_existing_message_ids(conn) == set()
         assert conn.selected == ["INBOX", "B&APw-ro"]
         assert "Ignoring 'Papierkorb'" in capsys.readouterr().out
+
+
+# Message-IDs that break RFC 5322. Python 3.11's strict header parser crashed on
+# these with IndexError (issue #21), so they must parse with any Python version.
+MALFORMED_IDS = [
+    (
+        "<[0123456789abcdef-ABCDEFGH234567=@example.com]>",
+        "[0123456789abcdef-abcdefgh234567=@example.com]",
+    ),
+    ("<[abc@example.com]>", "[abc@example.com]"),
+    ("<>", None),
+]
+
+
+class TestMalformedMessageIds:
+    @pytest.mark.parametrize(("value", "expected"), MALFORMED_IDS)
+    def test_extract_does_not_crash(self, value, expected):
+        raw = f"From: a@b.com\r\nMessage-ID: {value}\r\nSubject: Hi\r\n\r\nBody".encode()
+        assert extract_message_id_from_eml(raw) == expected
+
+    def test_icloud_fetch_payload(self):
+        fetched = [
+            (
+                b"1 (UID 7 BODY[HEADER.FIELDS (MESSAGE-ID)] {30}",
+                b"Message-ID: <[x@example.com]>\r\n\r\n",
+            ),
+            b")",
+        ]
+        assert parse_message_ids_from_fetch(fetched) == {"[x@example.com]"}
+
+    def test_classify_matches_malformed_id_already_in_icloud(self, tmp_path):
+        eml = tmp_path / "a.eml"
+        eml.write_bytes(b"From: a@b.com\r\nMessage-ID: <[x@example.com]>\r\n\r\nBody")
+        assert classify_eml_files([str(eml)], {"[x@example.com]"}) == (0, 1, 0)
+
+    def test_undecodable_header_bytes_do_not_crash(self):
+        result = extract_message_id_from_eml(b"Message-ID: <\x80\x81@example.com>\r\n\r\n")
+        assert result is None or isinstance(result, str)

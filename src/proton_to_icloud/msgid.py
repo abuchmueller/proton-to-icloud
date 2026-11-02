@@ -47,14 +47,21 @@ def normalize_message_id(value: str | None) -> str | None:
 
 
 def extract_message_id_from_eml(raw: bytes) -> str | None:
-    """Parse the Message-ID header from raw EML (or a header fragment)."""
+    """Parse the Message-ID header from raw EML (or a header fragment).
+
+    Uses the lenient ``compat32`` policy, which returns the header text as is.
+    The strict ``policy.default`` parser validates the msg-id syntax and, on
+    Python 3.11, crashes with ``IndexError`` on IDs that break it, such as
+    ``<[...@microsoft.com]>`` or ``<>`` (fixed in 3.12).  Any failure counts as
+    "no Message-ID", so the email is uploaded rather than wrongly skipped.
+    """
     try:
-        msg = email.parser.BytesParser(policy=email.policy.default).parsebytes(
+        msg = email.parser.BytesParser(policy=email.policy.compat32).parsebytes(
             raw, headersonly=True
         )
+        return normalize_message_id(msg.get("Message-ID"))
     except Exception:
         return None
-    return normalize_message_id(msg.get("Message-ID"))
 
 
 class Mailbox(NamedTuple):

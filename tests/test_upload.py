@@ -20,6 +20,7 @@ from proton_to_icloud.upload import (
     run_upload,
     sanitize_eml_headers,
     save_state,
+    upload_eml_files,
 )
 
 
@@ -475,3 +476,44 @@ class TestRunUploadSince:
             str(tmp_path), direct=False, base_mailbox="Proton-Import", since=cutoff
         )
         assert files == [str(tmp_path / "new.eml")]
+
+
+class _FakeImap:
+    """Accepts every APPEND."""
+
+    def __init__(self):
+        self.appended = []
+
+    def append(self, mailbox, flags, date, message):
+        self.appended.append(mailbox)
+        return "OK", [b"APPEND completed"]
+
+
+class TestUploadMalformedMessageId:
+    """Issue #21: a Message-ID like <[...@microsoft.com]> crashed the upload on Python 3.11."""
+
+    RAW = b"From: a@b.com\r\nMessage-ID: <[x@example.com]>\r\nSubject: Hi\r\n\r\nBody"
+
+    def _run(self, tmp_path, monkeypatch, existing_ids):
+        monkeypatch.setattr("proton_to_icloud.upload.time.sleep", lambda _s: None)
+        eml = tmp_path / "a.eml"
+        eml.write_bytes(self.RAW)
+        conn = _FakeImap()
+        result = upload_eml_files(
+            conn, [str(eml)], "INBOX", str(tmp_path), existing_ids=existing_ids
+        )
+        return conn, result
+
+    def test_plain_upload(self, tmp_path, monkeypatch):
+        conn, (uploaded, _skipped, skipped_existing, failed, _files) = self._run(
+            tmp_path, monkeypatch, None
+        )
+        assert (uploaded, skipped_existing, failed) == (1, 0, 0)
+        assert conn.appended == ["INBOX"]
+
+    def test_skip_existing_matches_it(self, tmp_path, monkeypatch):
+        conn, (uploaded, _skipped, skipped_existing, failed, _files) = self._run(
+            tmp_path, monkeypatch, {"[x@example.com]"}
+        )
+        assert (uploaded, skipped_existing, failed) == (0, 1, 0)
+        assert conn.appended == []

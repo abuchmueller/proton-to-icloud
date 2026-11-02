@@ -473,7 +473,8 @@ def upload_eml_files(
             print_progress(processed, remaining, uploaded, failed, start_time, skipped_existing)
             continue
 
-        msgid = extract_message_id_from_eml(raw_message)
+        # Only --skip-existing needs the Message-ID, plain uploads never parse it.
+        msgid = extract_message_id_from_eml(raw_message) if existing_ids is not None else None
         if _is_duplicate(msgid, existing_ids):
             skipped_existing += 1
             processed += 1
